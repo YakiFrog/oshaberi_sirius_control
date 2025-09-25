@@ -792,13 +792,9 @@ class LipSyncController:
         
         print(f"🔊 音声再生開始検知: {actual_audio_start:.6f}")
         
-        # 5. 音声再生開始直後におしゃべりモードを有効化（これで自然なタイミング）
-        if self.talking_controller:
-            self.talking_controller.set_talking_mode(True)
-            print("🎭 おしゃべりモード有効化（音声再生開始直後）")
-        
         # 6. リップシンク実行（音声開始と完全同期）
         timing_stats = {'perfect': 0, 'good': 0, 'poor': 0}
+        first_mouth_pattern = True  # 最初の口パターン設定フラグ
         
         for seq_time, mouth_shape, duration in mouth_sequence:
             # 目標時間 = 音声開始時間 + シーケンス時間
@@ -821,10 +817,26 @@ class LipSyncController:
                     # 遅延が発生
                     break
             
-            # 口パターン設定（非同期）
+            # 最初の口パターン設定前におしゃべりモードを有効化
+            if first_mouth_pattern and self.talking_controller:
+                self.talking_controller.set_talking_mode(True)
+                print("🎭 おしゃべりモード有効化（最初の口パターン設定前）")
+                # おしゃべりモード有効化の処理を待つ
+                time_module.sleep(0.02)  # 20msの短い待機
+            
+            # 口パターン設定（同期版で確実に設定）
             server_pattern = f"mouth_{mouth_shape}" if mouth_shape else None
             if server_pattern:
-                self.set_mouth_pattern_async(server_pattern)
+                # 最初のパターン設定時は同期版を使用してタイミングを確実にする
+                if first_mouth_pattern or seq_time < 0.5:  # 最初の0.5秒間は同期版
+                    success = self.set_mouth_pattern(server_pattern)
+                    if not success:
+                        print(f"⚠️ 口パターン設定失敗: {server_pattern}")
+                    if first_mouth_pattern:
+                        first_mouth_pattern = False
+                else:
+                    # その後は非同期版で高速化
+                    self.set_mouth_pattern_async(server_pattern)
                 
                 # タイミング精度評価
                 actual_time = time_module.time()
@@ -842,14 +854,14 @@ class LipSyncController:
                 
                 print(f"{sync_indicator} {seq_time:.2f}s: {server_pattern} (誤差:{timing_error_ms:+.1f}ms)")
         
-        # 7. 同期統計を表示
+        # 5. 同期統計を表示
         total_patterns = timing_stats['perfect'] + timing_stats['good'] + timing_stats['poor']
         if total_patterns > 0:
             perfect_rate = timing_stats['perfect'] / total_patterns * 100
             print(f"📈 同期精度: ✓{timing_stats['perfect']} ~{timing_stats['good']} ⚠{timing_stats['poor']} "
                   f"({perfect_rate:.1f}% が5ms以内の精度)")
         
-        # 8. 終了時に口パターンをリセット（表情の自然な口パターンに戻す）
+        # 6. 終了時に口パターンをリセット（表情の自然な口パターンに戻す）
         time_module.sleep(0.2)
         
         # おしゃべりモードを無効化（audioqueryの実装と同じ）
@@ -1220,11 +1232,23 @@ def main():
     print(f"📡 API URL: {SIRIUS_API_URL}")
     
     try:
-        # テスト前に特定の口パターンを設定（元の表情をシミュレート）
+        # テスト前に口パターンをクリアして自然な状態から始める
         print("\n--- テスト準備 ---")
-        print("🎭 発話前の口パターンを 'mouth_a' に設定（元の表情をシミュレート）")
-        controller.set_mouth_pattern("mouth_a")
-        time_module.sleep(0.5)  # 設定が反映されるまで待機
+        print("🎭 発話前の状態確認（自然な表情の口のまま開始）")
+        current_mouth = controller.get_current_mouth_pattern()
+        print(f"🔍 現在の口パターン: {current_mouth}")
+        
+        # 口パターンがある場合はクリアして自然な状態にする
+        if current_mouth is not None and current_mouth != "":
+            print("🔄 口パターンをクリアして自然な状態にします")
+            controller.set_mouth_pattern(None)
+            time_module.sleep(0.3)
+            final_mouth = controller.get_current_mouth_pattern()
+            print(f"🔍 クリア後の口パターン: {final_mouth}")
+        else:
+            print("✅ 既に自然な状態です")
+        
+        time_module.sleep(0.2)  # 状態安定化のための短い待機
         
         print("\n--- 精密同期テスト（ハードコード設定・元の口パターン復元機能） ---")
         
