@@ -2,6 +2,7 @@ from PySide6.QtUiTools import QUiLoader
 from PySide6.QtCore import QFile, QObject, Signal
 from PySide6.QtWidgets import QTextEdit, QPushButton
 from wake_word import WakeWordDetector
+import time
 
 class WakeWordController(QObject):
     """ウェイクワード検出のコントローラー（スレッドセーフなUI更新用）"""
@@ -9,8 +10,15 @@ class WakeWordController(QObject):
 
     def __init__(self):
         super().__init__()
-        self.detector = WakeWordDetector(self._on_wake_word_detected)
+        self.detector = None  # 遅延初期化
         self.is_detecting = False
+
+    def _get_detector(self):
+        """検出器を遅延初期化"""
+        if self.detector is None:
+            from wake_word import WakeWordDetector
+            self.detector = WakeWordDetector(self._on_wake_word_detected)
+        return self.detector
 
     def _on_wake_word_detected(self, text, confidence):
         """ウェイクワード検出時のコールバック"""
@@ -18,11 +26,13 @@ class WakeWordController(QObject):
 
     def toggle_detection(self):
         """検出の開始/停止を切り替え"""
+        detector = self._get_detector()
+        
         if self.is_detecting:
-            self.detector.stop_detection()
+            detector.stop_detection()
             self.is_detecting = False
         else:
-            self.detector.start_detection()
+            detector.start_detection()
             self.is_detecting = True
         return self.is_detecting
 
@@ -48,7 +58,49 @@ class MainWindow:
         # ボタンのイベント接続
         self.wake_word_button.clicked.connect(self._on_wake_word_button_clicked)
 
+        # ボタンの初期スタイル設定
+        self._setup_button_styles()
+
         # 初期状態
+        self._update_wake_word_button_text()
+
+    def _setup_button_styles(self):
+        """全ボタンの初期スタイルを設定"""
+        # 送信ボタン（青色）
+        self.send_button.setStyleSheet("""
+            QPushButton {
+                background-color: #339af0;
+                color: white;
+                border: 2px solid #228be6;
+                border-radius: 5px;
+                padding: 5px;
+            }
+            QPushButton:hover {
+                background-color: #228be6;
+            }
+            QPushButton:pressed {
+                background-color: #1c7ed6;
+            }
+        """)
+
+        # 手動音声入力ボタン（オレンジ色）
+        self.manual_audio_button.setStyleSheet("""
+            QPushButton {
+                background-color: #ff922b;
+                color: white;
+                border: 2px solid #fd7e14;
+                border-radius: 5px;
+                padding: 5px;
+            }
+            QPushButton:hover {
+                background-color: #fd7e14;
+            }
+            QPushButton:pressed {
+                background-color: #f76707;
+            }
+        """)
+
+        # ウェイクワードボタンの初期スタイル（停止中）
         self._update_wake_word_button_text()
 
     def _on_wake_word_button_clicked(self):
@@ -62,11 +114,41 @@ class MainWindow:
             self._add_chat_message("🛑 ウェイクワード検出を停止しました")
 
     def _update_wake_word_button_text(self):
-        """ウェイクワードボタンのテキストを更新"""
+        """ウェイクワードボタンのテキストと色を更新"""
         if self.wake_controller.is_detecting:
             self.wake_word_button.setText("ウェイクワード検知停止")
+            self.wake_word_button.setStyleSheet("""
+                QPushButton {
+                    background-color: #ff6b6b;
+                    color: white;
+                    border: 2px solid #ff5252;
+                    border-radius: 5px;
+                    padding: 5px;
+                }
+                QPushButton:hover {
+                    background-color: #ff5252;
+                }
+                QPushButton:pressed {
+                    background-color: #ff3838;
+                }
+            """)
         else:
             self.wake_word_button.setText("ウェイクワード検知開始")
+            self.wake_word_button.setStyleSheet("""
+                QPushButton {
+                    background-color: #51cf66;
+                    color: white;
+                    border: 2px solid #40c057;
+                    border-radius: 5px;
+                    padding: 5px;
+                }
+                QPushButton:hover {
+                    background-color: #40c057;
+                }
+                QPushButton:pressed {
+                    background-color: #37b24d;
+                }
+            """)
 
     def _on_wake_word_detected(self, text, confidence):
         """ウェイクワード検出時のUI更新"""
