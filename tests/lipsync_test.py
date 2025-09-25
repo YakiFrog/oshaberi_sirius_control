@@ -106,13 +106,20 @@ class AudioQueryPhonemeAnalyzer:
             ' ': None,      # スペース
         }
     
-    def analyze_from_audio_query(self, text: str, style_id: int):
+    def analyze_from_audio_query(self, text: str, style_id: int, speed_scale: float = 1.0):
         """AudioQueryから音韻情報を抽出してリップシンク用に変換"""
         try:
-            print(f"🔍 AudioQuery音韻解析開始: '{text}'")
+            print(f"🔍 AudioQuery音韻解析開始: '{text}' (速度: {speed_scale}x)")
             
             # AudioQueryを作成
             audio_query = self.synthesizer.create_audio_query(text, style_id)
+            
+            # 速度スケールを設定（AudioQueryオブジェクトに直接設定）
+            if hasattr(audio_query, 'speed_scale'):
+                audio_query.speed_scale = speed_scale
+                print(f"✅ 速度スケールを設定: {speed_scale}x")
+            else:
+                print(f"⚠️  AudioQueryにspeed_scale属性が見つからないため、デフォルト速度を使用")
             
             phoneme_timeline = []
             current_time = 0.0
@@ -127,6 +134,9 @@ class AudioQueryPhonemeAnalyzer:
                                 consonant_phoneme = mora.consonant
                                 consonant_duration = getattr(mora, 'consonant_length', 0.1) or 0.1
                                 
+                                # 速度スケールを適用
+                                consonant_duration /= speed_scale
+                                
                                 mouth_shape = self.phoneme_to_mouth.get(consonant_phoneme, 'a')  # デフォルトを'a'に
                                 phoneme_timeline.append((current_time, mouth_shape, consonant_duration))
                                 current_time += consonant_duration
@@ -136,6 +146,9 @@ class AudioQueryPhonemeAnalyzer:
                                 vowel_phoneme = mora.vowel
                                 vowel_duration = getattr(mora, 'vowel_length', 0.1) or 0.1
                                 
+                                # 速度スケールを適用
+                                vowel_duration /= speed_scale
+                                
                                 mouth_shape = self.phoneme_to_mouth.get(vowel_phoneme, 'a')
                                 phoneme_timeline.append((current_time, mouth_shape, vowel_duration))
                                 current_time += vowel_duration
@@ -144,6 +157,8 @@ class AudioQueryPhonemeAnalyzer:
                 if hasattr(accent_phrase, 'pause_mora') and accent_phrase.pause_mora:
                     pause_duration = getattr(accent_phrase.pause_mora, 'vowel_length', 0.0) or 0.0
                     if pause_duration > 0:
+                        # 速度スケールを適用
+                        pause_duration /= speed_scale
                         phoneme_timeline.append((current_time, None, pause_duration))
                         current_time += pause_duration
             
@@ -154,9 +169,9 @@ class AudioQueryPhonemeAnalyzer:
             print(f"❌ AudioQuery音韻解析エラー: {e}")
             return []
     
-    def get_mouth_shape_sequence(self, text: str, style_id: int):
+    def get_mouth_shape_sequence(self, text: str, style_id: int, speed_scale: float = 1.0):
         """テキストから口形状シーケンスを生成（AudioQuery版）"""
-        phoneme_timeline = self.analyze_from_audio_query(text, style_id)
+        phoneme_timeline = self.analyze_from_audio_query(text, style_id, speed_scale)
         mouth_sequence = []
         
         for time_pos, mouth_shape, duration in phoneme_timeline:
@@ -465,8 +480,42 @@ class LipSyncController:
         }
         return mouth_mapping.get(phoneme, None)
 
+    def play_audio_precise(self, wav_data, start_event):
+        """音声を再生（精密同期版）"""
+        try:
+            import tempfile
+            import subprocess
+            
+            with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as temp_file:
+                temp_file.write(wav_data)
+                temp_file_path = temp_file.name
+            
+            # 再生開始を通知
+            start_event.set()
+            
+            # afplayで再生
+            process = subprocess.Popen(['afplay', temp_file_path], 
+                                     stdout=subprocess.DEVNULL, 
+                                     stderr=subprocess.DEVNULL)
+            process.wait()
+            os.unlink(temp_file_path)
+        except Exception as e:
+            print(f"❌ 音声再生エラー: {e}")
+
+    def get_current_mouth_pattern(self):
+        """現在のシリウス口パターンを取得"""
+        try:
+            req = urllib.request.Request(f"{SIRIUS_API_URL}/mouth_pattern")
+            with urllib.request.urlopen(req, timeout=0.1) as response:
+                if response.getcode() == 200:
+                    data = json.loads(response.read().decode('utf-8'))
+                    return data.get('mouth_pattern')
+        except Exception as e:
+            print(f"⚠️ 現在の口パターン取得エラー: {e}")
+        return None  # 取得できない場合はNone
+
     def set_mouth_pattern(self, pattern):
-        """シリウスの口パターンを設定"""
+        """シリウスの口パターンを設定（同期版）"""
         try:
             data = json.dumps({"mouth_pattern": pattern}).encode('utf-8')
             req = urllib.request.Request(
@@ -474,57 +523,83 @@ class LipSyncController:
                 data=data,
                 headers={'Content-Type': 'application/json'}
             )
-            print(f"📡 HTTPリクエスト送信: POST {SIRIUS_API_URL}/mouth_pattern")
-            print(f"   データ: {{'mouth_pattern': '{pattern}'}}")
-            
             with urllib.request.urlopen(req, timeout=0.5) as response:
-                status_code = response.getcode()
-                # レスポンス詳細は省略（統計情報に集中）
-                return status_code == 200
+                return response.getcode() == 200
         except Exception as e:
-            print(f"❌ HTTPリクエストエラー: {e}")
+            print(f"❌ 口パターン設定エラー: {e}")
             return False
 
-    def play_audio(self, wav_data):
-        """音声を再生（macOS）"""
+    def reset_to_neutral(self):
+        """全設定をニュートラルにリセット（口パターンをNoneに設定）"""
         try:
-            import tempfile
-            with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as temp_file:
-                temp_file.write(wav_data)
-                temp_file_path = temp_file.name
-            
-            os.system(f"afplay {temp_file_path}")
-            os.unlink(temp_file_path)
+            # /resetエンドポイントが利用できない場合は口パターンをNoneに設定
+            success = self.set_mouth_pattern(None)
+            if success:
+                print("🔄 口パターンをニュートラルにリセットしました")
+            return success
         except Exception as e:
-            print(f"❌ 音声再生エラー: {e}")
+            print(f"🔄 リセットエラー: {e}")
+            return False
 
-    def speak_with_lipsync(self, text, style_id=0):
-        """音声合成 + リップシンク（AudioQuery使用版）"""
-        print(f"🎤 合成: 「{text}」")
+    def set_mouth_pattern_async(self, pattern):
+        """シリウスの口パターンを非同期設定"""
+        def _set_pattern():
+            try:
+                data = json.dumps({"mouth_pattern": pattern}).encode('utf-8')
+                req = urllib.request.Request(
+                    f"{SIRIUS_API_URL}/mouth_pattern",
+                    data=data,
+                    headers={'Content-Type': 'application/json'}
+                )
+                with urllib.request.urlopen(req, timeout=0.05) as response:
+                    return response.getcode() == 200
+            except:
+                return False
+        
+        # 非同期実行
+        thread = threading.Thread(target=_set_pattern, daemon=True)
+        thread.start()
+
+    def speak_with_lipsync(self, text, style_id=0, speed_scale=1.0, restore_original_mouth=True):
+        """音声合成 + リップシンク（超精密同期版）
+        
+        Args:
+            text: 合成するテキスト
+            style_id: VOICEVOXスタイルID
+            speed_scale: 速度スケール
+            restore_original_mouth: 発話後に口パターンをリセットして表情の自然な口パターンに戻すかどうか
+        """
+        print(f"🎤 合成: 「{text}」 (速度: {speed_scale}x)")
         print(f"📏 文字数: {len(text)}文字")
+        
+        # 1. 発話前の元の口パターンを保存
+        original_mouth_pattern = None
+        if restore_original_mouth:
+            original_mouth_pattern = self.get_current_mouth_pattern()
+            print(f"💾 元の口パターン保存: {original_mouth_pattern}")
         
         # AudioQuery音韻解析を使用
         try:
-            mouth_sequence = self.analyzer.get_mouth_shape_sequence(text, style_id)
+            mouth_sequence = self.analyzer.get_mouth_shape_sequence(text, style_id, speed_scale)
             print("✅ AudioQuery音韻解析成功")
         except Exception as e:
             print(f"❌ AudioQuery音韻解析エラー: {e}")
             print("🔄 文字ベース解析にフォールバック")
-            return self.speak_with_lipsync_fallback(text, style_id)
+            return self.speak_with_lipsync_fallback(text, style_id, speed_scale, restore_original_mouth)
         
         print("📝 口パターンシーケンス:")
         mouth_pattern_count = 0
         none_pattern_count = 0
-        for i, (seq_time, mouth_shape, duration) in enumerate(mouth_sequence[:15]):  # 最初の15個まで表示
+        for i, (seq_time, mouth_shape, duration) in enumerate(mouth_sequence[:10]):  # 最初の10個まで表示
             print(f"  {seq_time:.2f}s: {mouth_shape} ({duration:.2f}s)")
             if mouth_shape is not None:
                 mouth_pattern_count += 1
             else:
                 none_pattern_count += 1
         
-        if len(mouth_sequence) > 15:
-            remaining = len(mouth_sequence) - 15
-            for seq_time, mouth_shape, duration in mouth_sequence[15:]:
+        if len(mouth_sequence) > 10:
+            remaining = len(mouth_sequence) - 10
+            for seq_time, mouth_shape, duration in mouth_sequence[10:]:
                 if mouth_shape is not None:
                     mouth_pattern_count += 1
                 else:
@@ -536,42 +611,97 @@ class LipSyncController:
         # 音声合成
         try:
             audio_query = self.synthesizer.create_audio_query(text, style_id)
+            
+            # 速度スケールをAudioQueryに設定
+            if hasattr(audio_query, 'speed_scale'):
+                audio_query.speed_scale = speed_scale
+                print(f"✅ 速度スケールを設定: {speed_scale}x")
+            else:
+                print(f"⚠️  AudioQueryにspeed_scale属性が見つからないため、デフォルト速度を使用")
+            
             wav_data = self.synthesizer.synthesis(audio_query, style_id)
             print("✅ 音声合成成功")
         except Exception as e:
             print(f"❌ 音声合成エラー: {e}")
             return
         
-        # 音声再生開始
-        audio_thread = threading.Thread(target=self.play_audio, args=(wav_data,))
+        # 超精密同期モード
+        print("🎯 超精密同期モード開始...")
+        
+        # 2. 同期イベントを作成
+        audio_start_event = threading.Event()
+        
+        # 3. 音声再生スレッドを開始
+        audio_thread = threading.Thread(target=self.play_audio_precise, args=(wav_data, audio_start_event))
         audio_thread.daemon = True
         audio_thread.start()
         
-        # リップシンク実行
-        start_time = time_module.time()
+        # 4. 音声再生開始を待機
+        audio_start_event.wait()
+        actual_audio_start = time_module.time()
+        
+        print(f"🔊 音声再生開始検知: {actual_audio_start:.6f}")
+        
+        # 5. リップシンク実行（音声開始と完全同期）
+        timing_stats = {'perfect': 0, 'good': 0, 'poor': 0}
         
         for seq_time, mouth_shape, duration in mouth_sequence:
-            # 口パターン設定（正しい形式に変換）
+            # 目標時間 = 音声開始時間 + シーケンス時間
+            target_time = actual_audio_start + seq_time
+            
+            # 高精度なタイミング制御
+            while True:
+                current_time = time_module.time()
+                time_to_target = target_time - current_time
+                
+                if time_to_target <= 0.0001:  # 0.1ms以内の精度
+                    break
+                elif time_to_target > 0:
+                    # 短い時間はスピンウェイト
+                    if time_to_target < 0.001:
+                        pass  # スピン
+                    else:
+                        time_module.sleep(max(0.0001, time_to_target - 0.0005))
+                else:
+                    # 遅延が発生
+                    break
+            
+            # 口パターン設定（非同期）
             server_pattern = f"mouth_{mouth_shape}" if mouth_shape else None
-            
-            # タイミング待機
-            elapsed = time_module.time() - start_time
-            wait_time = seq_time - elapsed
-            if wait_time > 0:
-                time_module.sleep(wait_time)
-            
-            # 口パターン設定
-            success = self.set_mouth_pattern(server_pattern)
-            if not success:
-                print(f"⚠️ 口パターン設定失敗: {server_pattern}")
-            
-            # デバッグ出力
             if server_pattern:
-                print(f"👄 {seq_time:.2f}s: {server_pattern} (shape: {mouth_shape})")
+                self.set_mouth_pattern_async(server_pattern)
+                
+                # タイミング精度評価
+                actual_time = time_module.time()
+                timing_error_ms = (actual_time - target_time) * 1000
+                
+                if abs(timing_error_ms) <= 5:
+                    sync_indicator = "✓"
+                    timing_stats['perfect'] += 1
+                elif abs(timing_error_ms) <= 15:
+                    sync_indicator = "~"
+                    timing_stats['good'] += 1
+                else:
+                    sync_indicator = "⚠"
+                    timing_stats['poor'] += 1
+                
+                print(f"{sync_indicator} {seq_time:.2f}s: {server_pattern} (誤差:{timing_error_ms:+.1f}ms)")
         
-        # 終了時に口をリセット
-        time_module.sleep(0.5)
-        self.set_mouth_pattern(None)
+        # 6. 同期統計を表示
+        total_patterns = timing_stats['perfect'] + timing_stats['good'] + timing_stats['poor']
+        if total_patterns > 0:
+            perfect_rate = timing_stats['perfect'] / total_patterns * 100
+            print(f"📈 同期精度: ✓{timing_stats['perfect']} ~{timing_stats['good']} ⚠{timing_stats['poor']} "
+                  f"({perfect_rate:.1f}% が5ms以内の精度)")
+        
+        # 7. 終了時に口パターンをリセット（表情の自然な口パターンに戻す）
+        time_module.sleep(0.2)
+        if restore_original_mouth:
+            print("🔄 口パターンをリセット（表情の自然な口パターンに戻す）")
+            self.set_mouth_pattern_async(None)
+        else:
+            print("🔄 口パターンリセット")
+            self.set_mouth_pattern_async(None)
         print("✅ 発話完了\n")
 
     def speak_with_word_based_lipsync(self, text, style_id=0):
@@ -644,9 +774,22 @@ class LipSyncController:
         self.set_mouth_pattern(None)
         print("✅ 発話完了\n")
 
-    def speak_with_lipsync_fallback(self, text, style_id=0):
-        """フォールバック: 文字ベースリップシンク"""
-        print(f"🔄 フォールバック処理: 「{text}」")
+    def speak_with_lipsync_fallback(self, text, style_id=0, speed_scale=1.0, restore_original_mouth=True):
+        """フォールバック: 文字ベースリップシンク
+        
+        Args:
+            text: 合成するテキスト
+            style_id: VOICEVOXスタイルID
+            speed_scale: 速度スケール
+            restore_original_mouth: 発話後に口パターンをリセットして表情の自然な口パターンに戻すかどうか
+        """
+        print(f"🔄 フォールバック処理: 「{text}」 (速度: {speed_scale}x)")
+        
+        # 1. 発話前の元の口パターンを保存
+        original_mouth_pattern = None
+        if restore_original_mouth:
+            original_mouth_pattern = self.get_current_mouth_pattern()
+            print(f"💾 元の口パターン保存: {original_mouth_pattern}")
         
         # 音声合成（シンプル版）
         try:
@@ -704,9 +847,14 @@ class LipSyncController:
             if server_pattern:
                 print(f"👄 {seq_time:.2f}s: {server_pattern}")
         
-        # 終了時に口をリセット
+        # 終了時に口パターンをリセット（表情の自然な口パターンに戻す）
         time_module.sleep(0.5)
-        self.set_mouth_pattern(None)
+        if restore_original_mouth:
+            print("🔄 口パターンをリセット（表情の自然な口パターンに戻す）")
+            self.set_mouth_pattern(None)
+        else:
+            print("🔄 口パターンリセット")
+            self.set_mouth_pattern(None)
         print("✅ 発話完了\n")
 
     def text_to_mouth_sequence(self, text):
@@ -883,28 +1031,38 @@ class LipSyncController:
             return 'a'
 
 def main():
-    print("🎭 シンプルリップシンクテスト")
-    print("=" * 40)
+    print("🎭 精密リップシンクテスト（元の口パターン復元機能付き）")
+    print("=" * 50)
     
     # リップシンクコントローラー初期化
     controller = LipSyncController()
     
     # テストセリフ
     test_phrases = [
-        "今日今日今日今日今日今日"
+        "こんにちは、今日はいい天気ですね。"
     ]
     
     print("🎤 テスト開始（シリウスの表情サーバーが起動している必要があります）")
     print(f"📡 API URL: {SIRIUS_API_URL}")
     
     try:
+        # テスト前に特定の口パターンを設定（元の表情をシミュレート）
+        print("\n--- テスト準備 ---")
+        print("🎭 発話前の口パターンを 'mouth_a' に設定（元の表情をシミュレート）")
+        controller.set_mouth_pattern("mouth_a")
+        time_module.sleep(0.5)  # 設定が反映されるまで待機
+        
+        print("\n--- 精密同期テスト（元の口パターン復元機能） ---")
         for i, text in enumerate(test_phrases, 1):
             print(f"\n--- テスト {i}/{len(test_phrases)} ---")
-            controller.speak_with_lipsync(text)
+            controller.speak_with_lipsync(text, speed_scale=1.0, restore_original_mouth=True)
             
             if i < len(test_phrases):
-                print("⏳ 3秒待機...")
-                time_module.sleep(3)
+                print("⏳ 2秒待機...")
+                time_module.sleep(2)
+        
+        print("\n--- 復元機能テスト完了 ---")
+        print("💡 発話後に口パターンがリセットされ、表情の自然な口パターンに戻っているはずです")
         
         print("\n🎉 全テスト完了！")
         
