@@ -287,3 +287,14 @@ class VoiceSynthesizer:
     def speak_response(self, text: str):
         """応答音声を再生（リップシンク付き）"""
         return self.speak_with_lipsync(text)
+
+    def cleanup(self):
+        """リソースのクリーンアップ"""
+        try:
+            if self.synthesizer:
+                # VOICEVOX Coreのクリーンアップ
+                # Synthesizerオブジェクトの明示的なクリーンアップ
+                self.synthesizer = None
+                print("✅ VOICEVOXリソースクリーンアップ完了")
+        except Exception as e:
+            print(f"⚠️ VOICEVOXクリーンアップ警告: {e}")

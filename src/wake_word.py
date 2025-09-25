@@ -42,7 +42,7 @@ MODEL_CONFIG = {
 
 TRANSCRIBE_CONFIG = {
     "language": "ja",
-    "beam_size": 3,
+    "beam_size": 1,  # 高速化のため1に変更
     "temperature": 0.0,
     "compression_ratio_threshold": 2.4,
     "log_prob_threshold": -1.0,
