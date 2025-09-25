@@ -11,12 +11,6 @@ import urllib.request
 import urllib.parse
 import json
 from pprint import pprint
-from voicevox_core.blocking import Onnxruntime, OpenJtalk, Synthesizer, VoiceModelFile
-try:
-    import pykakasi
-except ImportError:
-    pykakasi = None
-    print("⚠️  pykakasiがインストールされていません。漢字の読み変換は利用できません。")
 
 try:
     import requests
@@ -26,574 +20,21 @@ except ImportError:
     Optional = object  # ダミーオブジェクト
     print("⚠️  requestsがインストールされていません。おしゃべりモード制御は利用できません。")
 
-# VOICEVOX Core設定
-VOICEVOX_ONNXRUNTIME_PATH = "voicevox_core/onnxruntime/lib/" + Onnxruntime.LIB_VERSIONED_FILENAME
-OPEN_JTALK_DICT_DIR = "voicevox_core/dict/open_jtalk_dic_utf_8-1.11"
-MODEL_PATH = "voicevox_core/models/vvms/13.vvm"  # 13.vvmを使用
+# 分割されたモジュールをインポート
+from speech_synthesis import SpeechSynthesizer
+from phoneme_analysis import PhonemeAnalyzer
+from mouth_control import MouthController, TalkingModeController, AudioPlayer
 
 # シリウス表情制御API
 SIRIUS_API_URL = "http://localhost:8080"
 
-class AudioQueryPhonemeAnalyzer:
-    """AudioQueryから音韻情報を抽出してリップシンク用に変換"""
-    
-    def __init__(self, synthesizer):
-        self.synthesizer = synthesizer
-        
-        # 日本語音韻から口形状への詳細マッピング
-        self.phoneme_to_mouth = {
-            # 母音
-            'a': 'a',    # あ
-            'i': 'i',    # い
-            'u': 'o',    # う（oに統合）
-            'e': 'a',    # え（aに近い）
-            'o': 'o',    # お
-            
-            # 子音（口の形に影響を与えるもの）
-            'k': 'a',    # か行（aに近い）
-            'g': 'a',    # が行
-            's': 'i',    # さ行（iに近い）
-            'z': 'i',    # ざ行
-            't': 'a',    # た行
-            'd': 'a',    # だ行
-            'n': 'o',    # な行（oに近い）
-            'h': 'o',    # は行
-            'b': 'o',    # ば行
-            'p': 'o',    # ぱ行
-            'm': 'o',    # ま行
-            'y': 'a',    # や行
-            'r': 'a',    # ら行
-            'w': 'o',    # わ行
-            'f': 'o',    # ふ
-            'v': 'o',    # ヴ
-            'ch': 'i',   # ち（iに近い）
-            'sh': 'i',   # し
-            'j': 'i',    # じ
-            'ts': 'a',   # つ
-            
-            # 子音＋母音の組み合わせ
-            # あ系
-            'ka': 'a', 'ga': 'a', 'sa': 'a', 'za': 'a', 'ta': 'a', 'da': 'a',
-            'na': 'a', 'ha': 'a', 'ba': 'a', 'pa': 'a', 'ma': 'a', 'ya': 'a',
-            'ra': 'a', 'wa': 'a', 'fa': 'a', 'va': 'a',
-            
-            # い系  
-            'ki': 'i', 'gi': 'i', 'si': 'i', 'shi': 'i', 'zi': 'i', 'ji': 'i',
-            'ti': 'i', 'chi': 'i', 'di': 'i', 'ni': 'i', 'hi': 'i', 'bi': 'i',
-            'pi': 'i', 'mi': 'i', 'ri': 'i', 'wi': 'i', 'fi': 'i', 'vi': 'i',
-            
-            # う系（oに統合）
-            'ku': 'o', 'gu': 'o', 'su': 'o', 'zu': 'o', 'tu': 'o', 'tsu': 'o',
-            'du': 'o', 'nu': 'o', 'hu': 'o', 'fu': 'o', 'bu': 'o', 'pu': 'o',
-            'mu': 'o', 'yu': 'o', 'ru': 'o', 'wu': 'o',
-            
-            # え系（aに近い）
-            'ke': 'a', 'ge': 'a', 'se': 'a', 'ze': 'a', 'te': 'a', 'de': 'a',
-            'ne': 'a', 'he': 'a', 'be': 'a', 'pe': 'a', 'me': 'a', 're': 'a',
-            'we': 'a', 'fe': 'a', 've': 'a',
-            
-            # お系
-            'ko': 'o', 'go': 'o', 'so': 'o', 'zo': 'o', 'to': 'o', 'do': 'o',
-            'no': 'o', 'ho': 'o', 'bo': 'o', 'po': 'o', 'mo': 'o', 'yo': 'o',
-            'ro': 'o', 'wo': 'o', 'fo': 'o', 'vo': 'o',
-            
-            # 特殊音韻
-            'sil': None,    # 無音
-            'pau': None,    # ポーズ
-            'cl': None,     # 閉鎖音
-            'q': None,      # 促音
-            'N': 'o',       # ん
-            
-            # 長音・その他
-            'ー': None,
-            'っ': None,
-            ',': None,      # 句読点
-            '、': None,
-            '。': None,
-            '.': None,
-            ' ': None,      # スペース
-        }
-    
-    def analyze_from_audio_query(self, text: str, style_id: int, speed_scale: float = 1.0):
-        """AudioQueryから音韻情報を抽出してリップシンク用に変換"""
-        try:
-            print(f"🔍 AudioQuery音韻解析開始: '{text}' (速度: {speed_scale}x)")
-            
-            # AudioQueryを作成
-            audio_query = self.synthesizer.create_audio_query(text, style_id)
-            
-            # 速度スケールを設定（AudioQueryオブジェクトに直接設定）
-            if hasattr(audio_query, 'speed_scale'):
-                audio_query.speed_scale = speed_scale
-                print(f"✅ 速度スケールを設定: {speed_scale}x")
-            else:
-                print(f"⚠️  AudioQueryにspeed_scale属性が見つからないため、デフォルト速度を使用")
-            
-            phoneme_timeline = []
-            current_time = 0.0
-            
-            # accent_phrasesから音韻情報を抽出
-            if hasattr(audio_query, 'accent_phrases'):
-                for accent_phrase in audio_query.accent_phrases:
-                    if hasattr(accent_phrase, 'moras'):
-                        for mora in accent_phrase.moras:
-                            # 子音処理
-                            if hasattr(mora, 'consonant') and mora.consonant:
-                                consonant_phoneme = mora.consonant
-                                consonant_duration = getattr(mora, 'consonant_length', 0.1) or 0.1
-                                
-                                # 速度スケールを適用
-                                consonant_duration /= speed_scale
-                                
-                                mouth_shape = self.phoneme_to_mouth.get(consonant_phoneme, 'a')  # デフォルトを'a'に
-                                phoneme_timeline.append((current_time, mouth_shape, consonant_duration))
-                                current_time += consonant_duration
-                            
-                            # 母音処理
-                            if hasattr(mora, 'vowel') and mora.vowel:
-                                vowel_phoneme = mora.vowel
-                                vowel_duration = getattr(mora, 'vowel_length', 0.1) or 0.1
-                                
-                                # 速度スケールを適用
-                                vowel_duration /= speed_scale
-                                
-                                mouth_shape = self.phoneme_to_mouth.get(vowel_phoneme, 'a')
-                                phoneme_timeline.append((current_time, mouth_shape, vowel_duration))
-                                current_time += vowel_duration
-                
-                # ポーズ処理
-                if hasattr(accent_phrase, 'pause_mora') and accent_phrase.pause_mora:
-                    pause_duration = getattr(accent_phrase.pause_mora, 'vowel_length', 0.0) or 0.0
-                    if pause_duration > 0:
-                        # 速度スケールを適用
-                        pause_duration /= speed_scale
-                        phoneme_timeline.append((current_time, None, pause_duration))
-                        current_time += pause_duration
-            
-            print(f"✅ AudioQuery音韻解析完了: {len(phoneme_timeline)}音韻, 総時間: {current_time:.2f}秒")
-            return phoneme_timeline
-            
-        except Exception as e:
-            print(f"❌ AudioQuery音韻解析エラー: {e}")
-            return []
-    
-    def get_mouth_shape_sequence(self, text: str, style_id: int, speed_scale: float = 1.0):
-        """テキストから口形状シーケンスを生成（AudioQuery版）"""
-        phoneme_timeline = self.analyze_from_audio_query(text, style_id, speed_scale)
-        mouth_sequence = []
-        
-        for time_pos, mouth_shape, duration in phoneme_timeline:
-            if mouth_shape:  # Noneでない場合のみ追加
-                mouth_sequence.append((time_pos, mouth_shape, duration))
-            else:
-                print(f"⚠️  無音音韻をスキップ: {time_pos:.2f}s (duration: {duration:.2f}s)")
-        
-        return mouth_sequence
-
-    def phoneme_to_mouth_shape(self, phoneme):
-        """音韻から口の形にマッピング"""
-        mouth_mapping = {
-            # あ系
-            'a': 'mouth_a',
-            'A': 'mouth_a',
-            # い系
-            'i': 'mouth_i', 
-            'I': 'mouth_i',
-            'e': 'mouth_a',
-            'E': 'mouth_a',
-            # お系
-            'o': 'mouth_o',
-            'O': 'mouth_o',
-            'u': 'mouth_o',
-            'U': 'mouth_o',
-            # 子音・無音
-            'pau': None,
-            'sil': None,
-        }
-        return mouth_mapping.get(phoneme, None)
-
-    def set_mouth_pattern(self, pattern):
-        """シリウスの口パターンを設定"""
-        try:
-            data = json.dumps({"mouth_pattern": pattern}).encode('utf-8')
-            req = urllib.request.Request(
-                f"{SIRIUS_API_URL}/mouth_pattern",
-                data=data,
-                headers={'Content-Type': 'application/json'}
-            )
-            print(f"📡 HTTPリクエスト送信: POST {SIRIUS_API_URL}/mouth_pattern")
-            print(f"   データ: {{'mouth_pattern': '{pattern}'}}")
-            
-            with urllib.request.urlopen(req, timeout=0.5) as response:
-                status_code = response.getcode()
-                # レスポンス詳細は省略（統計情報に集中）
-                return status_code == 200
-        except Exception as e:
-            print(f"❌ HTTPリクエストエラー: {e}")
-            return False
-
-    def play_audio(self, wav_data):
-        """音声を再生（macOS）"""
-        try:
-            import tempfile
-            with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as temp_file:
-                temp_file.write(wav_data)
-                temp_file_path = temp_file.name
-            
-            os.system(f"afplay {temp_file_path}")
-            os.unlink(temp_file_path)
-        except Exception as e:
-            print(f"❌ 音声再生エラー: {e}")
-
-    def speak_with_lipsync(self, text, style_id=0):
-        """音声合成 + リップシンク（AudioQuery使用版）"""
-        print(f"🎤 合成: 「{text}」")
-        print(f"📏 文字数: {len(text)}文字")
-        
-        # 1. AudioQueryで音韻情報を取得
-        try:
-            audio_query = self.synthesizer.create_audio_query(text, style_id)
-            print("✅ AudioQuery取得成功")
-        except Exception as e:
-            print(f"❌ AudioQuery取得エラー: {e}")
-            print("🔄 文字ベース解析にフォールバック")
-            return self.speak_with_lipsync_fallback(text, style_id)
-        
-        # AudioQuery音韻解析を使用
-        try:
-            mouth_sequence = self.analyzer.get_mouth_shape_sequence(text, style_id)
-            print("✅ AudioQuery音韻解析成功")
-        except Exception as e:
-            print(f"❌ AudioQuery音韻解析エラー: {e}")
-            print("🔄 文字ベース解析にフォールバック")
-            return self.speak_with_lipsync_fallback(text, style_id)
-        
-        print("📝 口パターンシーケンス:")
-        mouth_pattern_count = 0
-        none_pattern_count = 0
-        for i, (time, shape, duration) in enumerate(mouth_sequence[:15]):  # 最初の15個まで表示
-            print(f"  {time:.2f}s: {shape} ({duration:.2f}s)")
-            if shape is not None:
-                mouth_pattern_count += 1
-            else:
-                none_pattern_count += 1
-        
-        if len(mouth_sequence) > 15:
-            remaining = len(mouth_sequence) - 15
-            for time, shape, duration in mouth_sequence[15:]:
-                if shape is not None:
-                    mouth_pattern_count += 1
-                else:
-                    none_pattern_count += 1
-            print(f"  ... 他{remaining}個")
-        
-        print(f"📊 統計: 総パターン数{len(mouth_sequence)}, 口パターン{mouth_pattern_count}個, None{none_pattern_count}個")
-        
-        # 3. 音声合成
-        wav_data = self.synthesizer.synthesis(audio_query, style_id)
-        
-        # 4. 音声再生開始
-        audio_thread = threading.Thread(target=self.play_audio, args=(wav_data,))
-        audio_thread.daemon = True
-        audio_thread.start()
-        
-        # 5. リップシンク実行
-        start_time = time_module.time()
-        
-        for seq_time, mouth_shape, duration in mouth_sequence:
-            # タイミング待機
-            elapsed = time_module.time() - start_time
-            wait_time = seq_time - elapsed
-            if wait_time > 0:
-                time_module.sleep(wait_time)
-            
-            # 口パターン設定
-            self.set_mouth_pattern(mouth_shape)
-            
-            # デバッグ出力
-            if mouth_shape:
-                print(f"👄 {seq_time:.2f}s: {mouth_shape}")
-        
-        # 6. 終了時に口をリセット（元の表情の自然な口パターンに戻す）
-        time_module.sleep(0.2)
-        
-        # 明示的に口パターンをNoneに設定して表情の自然な口の形に戻る
-        success = self.set_mouth_pattern(None)
-        if success:
-            print("✅ 発話完了（口を元の表情の自然な口パターンに戻しました）")
-        else:
-            print("⚠️ 口パターンのリセットに失敗しました")
-        print()
-
-    def audioquery_to_mouth_sequence(self, audio_query):
-        """AudioQueryから口の動きシーケンスを生成（廃止予定）"""
-        # このメソッドは使われていないので、get_mouth_shape_sequenceを使う
-        return self.analyzer.get_mouth_shape_sequence("", 0)  # ダミー
-
-    def speak_with_lipsync_fallback(self, text, style_id=0):
-        """フォールバック: 文字ベースリップシンク"""
-        print(f"🔄 フォールバック処理: 「{text}」")
-        
-        # 1. 音声合成（シンプル版）
-        wav_data = self.synthesizer.tts(text, style_id)
-        
-        # 2. シンプルな音韻解析（文字ベース）
-        mouth_sequence = self.text_to_mouth_sequence(text)
-        
-        print("📝 口パターンシーケンス (フォールバック):")
-        mouth_pattern_count = 0
-        none_pattern_count = 0
-        for i, (time, shape, duration) in enumerate(mouth_sequence[:15]):
-            print(f"  {time:.2f}s: {shape} ({duration:.2f}s)")
-            if shape is not None:
-                mouth_pattern_count += 1
-            else:
-                none_pattern_count += 1
-        
-        if len(mouth_sequence) > 15:
-            remaining = len(mouth_sequence) - 15
-            for time, shape, duration in mouth_sequence[15:]:
-                if shape is not None:
-                    mouth_pattern_count += 1
-                else:
-                    none_pattern_count += 1
-            print(f"  ... 他{remaining}個")
-        
-        print(f"📊 統計: 総パターン数{len(mouth_sequence)}, 口パターン{mouth_pattern_count}個, None{none_pattern_count}個")
-        print(f"📊 比率: 文字数{len(text)} vs パターン数{len(mouth_sequence)} = {len(mouth_sequence)/len(text):.2f}倍")
-        
-        # 3. 音声再生開始
-        audio_thread = threading.Thread(target=self.play_audio, args=(wav_data,))
-        audio_thread.daemon = True
-        audio_thread.start()
-        
-        # 4. リップシンク実行
-        start_time = time_module.time()
-        
-        for seq_time, mouth_shape, duration in mouth_sequence:
-            # タイミング待機
-            elapsed = time_module.time() - start_time
-            wait_time = seq_time - elapsed
-            if wait_time > 0:
-                time_module.sleep(wait_time)
-            
-            # 口パターン設定
-            self.set_mouth_pattern(mouth_shape)
-            
-            # デバッグ出力
-            if mouth_shape:
-                print(f"👄 {seq_time:.2f}s: {mouth_shape}")
-        
-        # 5. 終了時に口をリセット（元の表情の自然な口パターンに戻す）
-        time_module.sleep(0.2)
-        success = self.set_mouth_pattern(None)
-        if success:
-            print("✅ 発話完了（口を元の表情の自然な口パターンに戻しました）")
-        else:
-            print("⚠️ 口パターンのリセットに失敗しました")
-        print()
-
-    def text_to_mouth_sequence(self, text):
-        """テキストから口の動きシーケンスを生成（簡易版）"""
-        sequence = []
-        current_time = 0.0
-        char_duration = 0.15  # 1文字あたりの時間
-        
-        for char in text:
-            mouth_shape = self.char_to_mouth_shape(char)
-            sequence.append((current_time, mouth_shape, char_duration))
-            current_time += char_duration
-        
-        return sequence
-
-    def char_to_mouth_shape(self, char):
-        """文字から口の形を推定（pykakasi漢字読み対応版）"""
-        # 漢字の場合はpykakasiで読みに変換
-        if self.kakasi_converter and self._is_kanji(char):
-            try:
-                # 新しいpykakasiのAPI使用
-                converted = self.kakasi_converter.convert(char)
-                if converted:
-                    # 変換結果から'hira'（ひらがな）を取得
-                    hiragana_reading = ''.join([item['hira'] for item in converted])
-                    if hiragana_reading and hiragana_reading != char:
-                        # 読みの最初の文字で口の形を判定
-                        first_char = hiragana_reading[0]
-                        print(f"🔤 漢字変換: '{char}' → '{hiragana_reading}' → 判定文字:'{first_char}'")
-                        return self._hiragana_to_mouth_shape(first_char)
-            except Exception as e:
-                print(f"⚠️  漢字読み変換エラー: {char} - {e}")
-        
-        # ひらがな・カタカナ・その他の処理
-        return self._hiragana_to_mouth_shape(char)
-    
-    def _is_kanji(self, char):
-        """文字が漢字かどうか判定"""
-        return '\u4e00' <= char <= '\u9faf'
-    
-    def _hiragana_to_mouth_shape(self, char):
-        """ひらがな・カタカナから口の形を判定"""
-        # ひらがな・カタカナの母音判定
-        a_sounds = 'あかがさざただなはばぱまやらわアカガサザタダナハバパマヤラワ'
-        i_sounds = 'いきぎしじちぢにひびぴみりイキギシジチヂニヒビピミリ'
-        o_sounds = 'うえおこごそぞとどのほぼぽもよろをンウエオコゴソゾトドノホボポモヨロヲン'
-        
-        if char in a_sounds:
-            return 'mouth_a'
-        elif char in i_sounds:
-            return 'mouth_i' 
-        elif char in o_sounds:
-            return 'mouth_o'
-        else:
-            return None
-
-class TalkingModeController:
-    """おしゃべりモード制御クラス"""
-    
-    def __init__(self, server_url="http://localhost:8080"):
-        self.server_url = server_url
-        self.is_talking_mode_active = False
-        self.last_mouth_pattern = None  # 冗長リクエストを防ぐ
-        
-        # 高速化のためのHTTPセッション設定
-        self.session = requests.Session()
-        self.session.headers.update({
-            'Content-Type': 'application/json',
-            'Connection': 'keep-alive'  # Keep-Aliveを有効にする
-        })
-        
-        # コネクションプールの設定
-        adapter = requests.adapters.HTTPAdapter(
-            pool_connections=1,  # プール内の接続数
-            pool_maxsize=1,      # プールの最大サイズ
-            max_retries=0        # リトライしない（高速化のため）
-        )
-        self.session.mount('http://', adapter)
-        self.session.mount('https://', adapter)
-    
-    def set_talking_mode(self, enabled: bool) -> bool:
-        """おしゃべりモードを設定"""
-        if self.is_talking_mode_active == enabled:
-            return True  # ログ出力も省略して高速化
-        
-        try:
-            response = self.session.post(
-                f"{self.server_url}/talking_mouth_mode",
-                json={'talking_mouth_mode': enabled},
-                timeout=0.1  # タイムアウトを極短に
-            )
-            
-            if response.status_code == 200:
-                self.is_talking_mode_active = enabled
-                return True
-            else:
-                print(f"❌ おしゃべりモード設定失敗: HTTP {response.status_code}")
-                return False
-                
-        except Exception as e:
-            print(f"❌ おしゃべりモード設定エラー: {e}")
-            return False
-    
-    def set_mouth_pattern_fast(self, pattern) -> bool:
-        """高速口形状設定（冗長リクエスト排除）"""
-        # 同じパターンの場合はスキップ（ただし、Noneの場合は必ず実行）
-        if self.last_mouth_pattern == pattern and pattern is not None:
-            print(f"🔧 同じ口パターン ({pattern}) のためスキップ")
-            return True
-        
-        try:
-            print(f"🔧 口パターン設定リクエスト: {pattern}")
-            response = self.session.post(
-                f"{self.server_url}/mouth_pattern",
-                json={'mouth_pattern': pattern},
-                timeout=0.1  # タイムアウトを少し長くして確実に処理
-            )
-            
-            if response.status_code == 200:
-                self.last_mouth_pattern = pattern
-                print(f"✅ 口パターン設定成功: {pattern}")
-                return True
-            else:
-                print(f"❌ 口パターン設定失敗: HTTP {response.status_code}, レスポンス: {response.text}")
-                return False
-                
-        except Exception as e:
-            print(f"❌ 口パターン設定エラー: {e}")
-            return False
-    
-    def reset_to_neutral(self):
-        """main.pyのリセット機能を使用して全設定をリセット"""
-        try:
-            response = self.session.post(
-                f"{self.server_url}/api/reset",
-                json={},
-                timeout=0.1
-            )
-            
-            if response.status_code == 200:
-                self.is_talking_mode_active = False
-                self.last_mouth_pattern = None
-                print("🔄 main.pyリセット機能により全設定をリセットしました")
-                return True
-            else:
-                print(f"❌ リセット失敗: HTTP {response.status_code}")
-                return False
-                
-        except Exception as e:
-            print(f"❌ リセット機能エラー: {e}")
-            return False
-    
-    def cleanup_session(self):
-        """セッションのクリーンアップ（メモリリーク防止）"""
-        try:
-            self.session.close()
-            self.session = requests.Session()
-            self.session.headers.update({
-                'Content-Type': 'application/json',
-                'Connection': 'keep-alive'
-            })
-            # アダプターも再設定
-            adapter = requests.adapters.HTTPAdapter(
-                pool_connections=1,
-                pool_maxsize=1,
-                max_retries=0
-            )
-            self.session.mount('http://', adapter)
-            self.session.mount('https://', adapter)
-            self.last_mouth_pattern = None
-        except Exception as e:
-            print(f"セッションクリーンアップエラー: {e}")
-
 class LipSyncController:
     def __init__(self):
-        # VOICEVOX初期化
-        print("🚀 VOICEVOX初期化中...")
-        self.synthesizer = Synthesizer(
-            Onnxruntime.load_once(filename=VOICEVOX_ONNXRUNTIME_PATH), 
-            OpenJtalk(OPEN_JTALK_DICT_DIR)
-        )
-        
-        # 音声モデル読み込み（13.vvmを使用）
-        with VoiceModelFile.open(MODEL_PATH) as model:
-            self.synthesizer.load_voice_model(model)
-        print("✅ VOICEVOX準備完了")
-        
-        # pykakasi初期化（漢字読み変換用）
-        self.kakasi_converter = None
-        if pykakasi:
-            try:
-                # 新しいpykakasiのAPI使用
-                kks = pykakasi.kakasi()
-                self.kakasi_converter = kks
-                print("✅ pykakasi漢字読み変換準備完了")
-            except Exception as e:
-                print(f"⚠️  pykakasi初期化エラー: {e}")
-                self.kakasi_converter = None
-        
-        # AudioQuery音韻解析器を初期化
-        self.analyzer = AudioQueryPhonemeAnalyzer(self.synthesizer)
-        
-        # おしゃべりモードコントローラーを初期化
+        # 分割されたモジュールの初期化
+        self.speech_synthesizer = SpeechSynthesizer()
+        self.phoneme_analyzer = PhonemeAnalyzer()
+        self.mouth_controller = MouthController()
+        self.audio_player = AudioPlayer()
         self.talking_controller = TalkingModeController() if requests else None
         
         # 音声パラメータ（ハードコードされた設定）
@@ -725,12 +166,14 @@ class LipSyncController:
         # 1. 発話前の元の口パターンを保存
         original_mouth_pattern = None
         if restore_original_mouth:
-            original_mouth_pattern = self.get_current_mouth_pattern()
+            original_mouth_pattern = self.mouth_controller.get_current_mouth_pattern()
             print(f"💾 元の口パターン保存: {original_mouth_pattern}")
         
         # AudioQuery音韻解析を使用
         try:
-            mouth_sequence = self.analyzer.get_mouth_shape_sequence(text, style_id, speed_scale)
+            audio_query = self.speech_synthesizer.create_audio_query(text, style_id)
+            self.speech_synthesizer.set_speed_scale(audio_query, speed_scale)
+            mouth_sequence = self.phoneme_analyzer.get_mouth_shape_sequence(audio_query, speed_scale)
             print("✅ AudioQuery音韻解析成功")
         except Exception as e:
             print(f"❌ AudioQuery音韻解析エラー: {e}")
@@ -760,16 +203,7 @@ class LipSyncController:
         
         # 音声合成
         try:
-            audio_query = self.synthesizer.create_audio_query(text, style_id)
-            
-            # 速度スケールをAudioQueryに設定
-            if hasattr(audio_query, 'speed_scale'):
-                audio_query.speed_scale = speed_scale
-                print(f"✅ 速度スケールを設定: {speed_scale}x")
-            else:
-                print(f"⚠️  AudioQueryにspeed_scale属性が見つからないため、デフォルト速度を使用")
-            
-            wav_data = self.synthesizer.synthesis(audio_query, style_id)
+            wav_data = self.speech_synthesizer.synthesize_speech(audio_query, style_id)
             print("✅ 音声合成成功")
         except Exception as e:
             print(f"❌ 音声合成エラー: {e}")
@@ -782,7 +216,7 @@ class LipSyncController:
         audio_start_event = threading.Event()
         
         # 3. 音声再生スレッドを開始
-        audio_thread = threading.Thread(target=self.play_audio_precise, args=(wav_data, audio_start_event))
+        audio_thread = threading.Thread(target=self.audio_player.play_audio_precise, args=(wav_data, audio_start_event))
         audio_thread.daemon = True
         audio_thread.start()
         
@@ -829,14 +263,14 @@ class LipSyncController:
             if server_pattern:
                 # 最初のパターン設定時は同期版を使用してタイミングを確実にする
                 if first_mouth_pattern or seq_time < 0.5:  # 最初の0.5秒間は同期版
-                    success = self.set_mouth_pattern(server_pattern)
+                    success = self.mouth_controller.set_mouth_pattern(server_pattern)
                     if not success:
                         print(f"⚠️ 口パターン設定失敗: {server_pattern}")
                     if first_mouth_pattern:
                         first_mouth_pattern = False
                 else:
                     # その後は非同期版で高速化
-                    self.set_mouth_pattern_async(server_pattern)
+                    self.mouth_controller.set_mouth_pattern_async(server_pattern)
                 
                 # タイミング精度評価
                 actual_time = time_module.time()
@@ -875,16 +309,16 @@ class LipSyncController:
                 print("✅ 口パターンをクリアしました（元の表情の自然な口パターンに戻る）")
             else:
                 # フォールバック: 直接設定
-                self.set_mouth_pattern(None)
+                self.mouth_controller.set_mouth_pattern(None)
                 print("✅ 口パターンをクリアしました（フォールバック処理で戻る）")
         else:
             # talking_controllerがない場合は従来の方法
             if restore_original_mouth:
                 print("🔄 口パターンをリセット（元の表情の自然な口パターンに戻す）")
-                self.set_mouth_pattern_async(None)
+                self.mouth_controller.set_mouth_pattern_async(None)
             else:
                 print("🔄 口パターンリセット")
-                self.set_mouth_pattern_async(None)
+                self.mouth_controller.set_mouth_pattern_async(None)
         
         print("✅ 発話完了\n")
 
@@ -972,18 +406,18 @@ class LipSyncController:
         # 1. 発話前の元の口パターンを保存
         original_mouth_pattern = None
         if restore_original_mouth:
-            original_mouth_pattern = self.get_current_mouth_pattern()
+            original_mouth_pattern = self.mouth_controller.get_current_mouth_pattern()
             print(f"💾 元の口パターン保存: {original_mouth_pattern}")
         
         # 音声合成（シンプル版）
         try:
-            wav_data = self.synthesizer.tts(text, style_id)
+            wav_data = self.speech_synthesizer.synthesize_simple(text, style_id)
         except Exception as e:
             print(f"❌ 音声合成エラー: {e}")
             return
         
         # シンプルな音韻解析（文字ベース）
-        mouth_sequence = self.text_to_mouth_sequence(text)
+        mouth_sequence = self.phoneme_analyzer.text_to_mouth_sequence(text)
         
         print("📝 口パターンシーケンス (フォールバック):")
         mouth_pattern_count = 0
@@ -1008,7 +442,7 @@ class LipSyncController:
         print(f"📊 比率: 文字数{len(text)} vs パターン数{len(mouth_sequence)} = {len(mouth_sequence)/len(text):.2f}倍")
         
         # 音声再生開始
-        audio_thread = threading.Thread(target=self.play_audio, args=(wav_data,))
+        audio_thread = threading.Thread(target=self.audio_player.play_audio, args=(wav_data,))
         audio_thread.daemon = True
         audio_thread.start()
         
@@ -1025,7 +459,7 @@ class LipSyncController:
             # 口パターン設定（正しい形式に変換）
             server_pattern = mouth_shape  # 既にmouth_形式になっているはず
             
-            self.set_mouth_pattern(server_pattern)
+            self.mouth_controller.set_mouth_pattern(server_pattern)
             
             # デバッグ出力
             if server_pattern:
@@ -1035,7 +469,7 @@ class LipSyncController:
         time_module.sleep(0.2)
         
         # 明示的に口パターンをNoneに設定
-        success = self.set_mouth_pattern(None)
+        success = self.mouth_controller.set_mouth_pattern(None)
         if success:
             if restore_original_mouth:
                 print("🔄 口パターンをリセット（元の表情の自然な口パターンに戻す）")
@@ -1235,15 +669,15 @@ def main():
         # テスト前に口パターンをクリアして自然な状態から始める
         print("\n--- テスト準備 ---")
         print("🎭 発話前の状態確認（自然な表情の口のまま開始）")
-        current_mouth = controller.get_current_mouth_pattern()
+        current_mouth = controller.mouth_controller.get_current_mouth_pattern()
         print(f"🔍 現在の口パターン: {current_mouth}")
         
         # 口パターンがある場合はクリアして自然な状態にする
         if current_mouth is not None and current_mouth != "":
             print("🔄 口パターンをクリアして自然な状態にします")
-            controller.set_mouth_pattern(None)
+            controller.mouth_controller.set_mouth_pattern(None)
             time_module.sleep(0.3)
-            final_mouth = controller.get_current_mouth_pattern()
+            final_mouth = controller.mouth_controller.get_current_mouth_pattern()
             print(f"🔍 クリア後の口パターン: {final_mouth}")
         else:
             print("✅ 既に自然な状態です")
@@ -1263,15 +697,15 @@ def main():
         
         # 最終確認: 口パターンが確実にクリアされているかチェック
         print("\n--- 最終確認 ---")
-        current_mouth = controller.get_current_mouth_pattern()
+        current_mouth = controller.mouth_controller.get_current_mouth_pattern()
         print(f"🔍 現在の口パターン: {current_mouth}")
         
         if current_mouth is not None and current_mouth != "":
             print("⚠️ 口パターンがまだ設定されています。再度クリアを実行...")
-            success = controller.set_mouth_pattern(None)
+            success = controller.mouth_controller.set_mouth_pattern(None)
             if success:
                 time_module.sleep(0.3)
-                final_mouth = controller.get_current_mouth_pattern()
+                final_mouth = controller.mouth_controller.get_current_mouth_pattern()
                 print(f"🔍 クリア後の口パターン: {final_mouth}")
                 if final_mouth is None or final_mouth == "":
                     print("✅ 口パターンが正常にクリアされました")
