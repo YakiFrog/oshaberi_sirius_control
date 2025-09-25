@@ -207,14 +207,14 @@ def main():
     # 音声デバイス一覧を表示
     list_audio_devices()
 
-    # Whisperモデルをロード（最適化設定）
+    # Whisperモデルをロード（高速化設定）
     print("Whisperモデルをロード中...")
     model = WhisperModel(
-        "medium", 
-        device="cpu", 
+        "medium",  # ここはゆずれない
+        device="cpu",
         compute_type="int8",
-        cpu_threads=4,  # CPUスレッド数を制限して安定性向上
-        num_workers=1   # ワーカー数を1に設定してメモリ効率向上
+        cpu_threads=8,  # CPUスレッド数を8に増加（10コア中）
+        num_workers=1
     )
     print("モデルロード完了")
 
@@ -254,18 +254,19 @@ def main():
                             segments, info = model.transcribe(
                                 temp_file,
                                 language="ja",              # 日本語指定
-                                beam_size=3,                # ビームサーチサイズを削減（5→3）速度向上
-                                temperature=0.0,            # 決定論的出力（精度向上）
-                                compression_ratio_threshold=2.4,  # 圧縮率閾値（ノイズ除去）
-                                log_prob_threshold=-1.0,    # 確率閾値（低信頼度フィルタ）
-                                no_speech_threshold=0.3,    # 無音判定閾値を調整（0.2→0.3）処理軽減
-                                condition_on_previous_text=False,  # 前のテキストに依存しない
-                                initial_prompt="以下は日本語の音声です。",  # 日本語コンテキスト
-                                word_timestamps=False,      # 単語タイムスタンプ無効化で高速化
-                                vad_filter=True,           # Voice Activity Detection（音声区間検出）
+                                beam_size=1,                # ビームサーチを1に設定（greedy decoding）で最大速度
+                                temperature=0.0,            # 決定論的出力
+                                compression_ratio_threshold=2.0,  # 圧縮率閾値を緩く（2.4→2.0）で処理軽減
+                                log_prob_threshold=-0.8,    # 確率閾値を緩く（-1.0→-0.8）で高速化
+                                no_speech_threshold=0.4,    # 無音判定をさらに緩く（0.3→0.4）
+                                condition_on_previous_text=False,
+                                initial_prompt="以下は日本語の音声です。",
+                                word_timestamps=False,
+                                vad_filter=True,
                                 vad_parameters=dict(
-                                    min_silence_duration_ms=500,  # 無音区間を長く（250→500ms）処理軽減
-                                    speech_pad_ms=100       # 音声パディングを短縮
+                                    min_silence_duration_ms=800,  # 無音区間を長く（500→800ms）で処理軽減
+                                    speech_pad_ms=50,       # 音声パディングをさらに短縮
+                                    threshold=0.5           # VAD閾値を高くしてより積極的なフィルタリング
                                 )
                             )
                             
