@@ -9,10 +9,8 @@ import tempfile
 import pyaudio
 import wave
 import numpy as np
-import threading
 import time
-import sys
-import select
+import threading
 from faster_whisper import WhisperModel
 
 # 設定
@@ -108,6 +106,38 @@ class AudioRecorder:
         )
         self.is_recording = True
         print("録音を開始しました。'stop' と入力して終了してください。")
+        
+        # 録音開始後、バックグラウンドで音声データを継続取得
+        import threading
+        self.recording_thread = threading.Thread(target=self._continuous_recording, daemon=True)
+        self.recording_thread.start()
+
+    def _continuous_recording(self):
+        """バックグラウンドで録音を継続する"""
+        frame_count = 0
+        while self.is_recording:
+            try:
+                data = self.stream.read(CHUNK, exception_on_overflow=False)
+                self.frames.append(data)
+                frame_count += 1
+                
+                # 音声レベルをチェック
+                import numpy as np
+                audio_data = np.frombuffer(data, dtype=np.int16)
+                if len(audio_data) > 0:
+                    volume = np.sqrt(np.mean(audio_data.astype(np.float64)**2))
+                    if np.isnan(volume):
+                        volume = 0
+                else:
+                    volume = 0
+                    
+                if frame_count % 10 == 0:  # 10フレームごとに表示
+                    print(f"録音中... フレーム数: {frame_count}, 音量: {volume:.0f}")
+            except Exception as e:
+                print(f"録音エラー: {e}")
+                break
+            import time
+            time.sleep(0.01)  # 10ms待機
 
     def stop_recording(self):
         if not self.is_recording:
@@ -115,6 +145,11 @@ class AudioRecorder:
             return None
 
         self.is_recording = False
+        
+        # スレッドの終了を待つ
+        if hasattr(self, 'recording_thread') and self.recording_thread.is_alive():
+            self.recording_thread.join(timeout=1.0)
+        
         self.stream.stop_stream()
         self.stream.close()
 
@@ -180,35 +215,23 @@ def main():
     recorder = AudioRecorder()
 
     try:
-        import threading
         import time
-        import sys
-        import select
-        
-        def recording_thread():
-            """録音用スレッド"""
-            while recorder.is_recording:
-                recorder.record_chunk()
-                time.sleep(0.01)  # 10ms待機
         
         while True:
-            # 録音中でもコマンド入力を受け付ける
-            if sys.stdin in select.select([sys.stdin], [], [], 0)[0]:
-                command = input("コマンド: ").strip().lower()
-            else:
-                command = input("コマンド: ").strip().lower()
+            command = input("コマンド: ").strip().lower()
 
             if command == "start":
                 if not recorder.is_recording:
                     recorder.start_recording()
-                    # 録音スレッドを開始
-                    thread = threading.Thread(target=recording_thread, daemon=True)
-                    thread.start()
+                    print("録音中です... 'stop'と入力して終了してください")
                 else:
                     print("すでに録音中です。")
                     
             elif command == "stop":
                 if recorder.is_recording:
+                    # stopコマンド入力時の時間を記録
+                    stop_command_time = time.time()
+                    
                     temp_file = recorder.stop_recording()
                     if temp_file:
                         # ファイルサイズをチェック
@@ -220,40 +243,61 @@ def main():
                         
                         # 音声認識（sync_siriusface.pyを参考にしたパラメータチューニング）
                         print("音声認識処理中...")
-                        segments, info = model.transcribe(
-                            temp_file,
-                            language="ja",              # 日本語指定
-                            beam_size=5,                # ビームサーチサイズ（精度向上）
-                            temperature=0.0,            # 決定論的出力（精度向上）
-                            compression_ratio_threshold=2.4,  # 圧縮率閾値（ノイズ除去）
-                            log_prob_threshold=-1.0,    # 確率閾値（低信頼度フィルタ）
-                            no_speech_threshold=0.2,    # 無音判定閾値を緩く（0.6→0.2）
-                            condition_on_previous_text=False,  # 前のテキストに依存しない
-                            initial_prompt="以下は日本語の音声です。",  # 日本語コンテキスト
-                            word_timestamps=True,       # 単語レベルの信頼度取得のため有効化
-                            vad_filter=True,           # Voice Activity Detection（音声区間検出）
-                            vad_parameters=dict(min_silence_duration_ms=250)  # 無音区間を短く（500→250ms）
-                        )
                         
-                        # セグメントからテキストを抽出
-                        segments_list = list(segments)
-                        text = "".join(segment.text for segment in segments_list).strip()
-                        
-                        # デバッグ情報を追加
-                        print(f"セグメント数: {len(segments_list)}")
-                        for i, segment in enumerate(segments_list):
-                            print(f"  セグメント {i+1}: '{segment.text}' (開始: {segment.start:.2f}s, 終了: {segment.end:.2f}s)")
-                        
-                        # 信頼度情報を計算
-                        confidence_info = calculate_confidence_metrics(segments_list, info)
-                        
-                        print(f"認識結果: {text}")
-                        print(f"言語: {info.language} (確信度: {info.language_probability:.2f})")
-                        print(f"音声時間: {info.duration:.2f}秒")
-                        print(f"認識精度: {confidence_info['overall_confidence']:.1f}% (単語数: {confidence_info['word_count']})")
+                        try:
+                            segments, info = model.transcribe(
+                                temp_file,
+                                language="ja",              # 日本語指定
+                                beam_size=5,                # ビームサーチサイズ（精度向上）
+                                temperature=0.0,            # 決定論的出力（精度向上）
+                                compression_ratio_threshold=2.4,  # 圧縮率閾値（ノイズ除去）
+                                log_prob_threshold=-1.0,    # 確率閾値（低信頼度フィルタ）
+                                no_speech_threshold=0.2,    # 無音判定閾値を緩く（0.6→0.2）
+                                condition_on_previous_text=False,  # 前のテキストに依存しない
+                                initial_prompt="以下は日本語の音声です。",  # 日本語コンテキスト
+                                word_timestamps=True,       # 単語レベルの信頼度取得のため有効化
+                                vad_filter=True,           # Voice Activity Detection（音声区間検出）
+                                vad_parameters=dict(min_silence_duration_ms=250)  # 無音区間を短く（500→250ms）
+                            )
+                            
+                            # セグメントからテキストを抽出
+                            segments_list = list(segments)
+                            text = "".join(segment.text for segment in segments_list).strip()
+                            
+                            # stopコマンドから認識完了までの時間を計算
+                            recognition_end = time.time()
+                            total_time_from_stop = recognition_end - stop_command_time
+                            
+                            # デバッグ情報を追加
+                            print(f"セグメント数: {len(segments_list)}")
+                            for i, segment in enumerate(segments_list):
+                                print(f"  セグメント {i+1}: '{segment.text}' (開始: {segment.start:.2f}s, 終了: {segment.end:.2f}s)")
+                            
+                            # 信頼度情報を計算
+                            confidence_info = calculate_confidence_metrics(segments_list, info)
+                            
+                            print(f"認識結果: {text}")
+                            print(f"言語: {info.language} (確信度: {info.language_probability:.2f})")
+                            print(f"音声時間: {info.duration:.2f}秒")
+                            print(f"認識精度: {confidence_info['overall_confidence']:.1f}% (単語数: {confidence_info['word_count']})")
+                            print(f"⏱️  stopコマンドから完了まで: {total_time_from_stop:.2f}秒")
+                            
+                            # 処理効率の計算
+                            if info.duration > 0:
+                                processing_ratio = total_time_from_stop / info.duration
+                                if processing_ratio < 1.0:
+                                    print(f"⚡ リアルタイム係数: {processing_ratio:.2f}x (リアルタイムより {1/processing_ratio:.1f}倍高速)")
+                                else:
+                                    print(f"🐌 リアルタイム係数: {processing_ratio:.2f}x (リアルタイムより {processing_ratio:.1f}倍低速)")
+                            
+                        except Exception as transcribe_error:
+                            print(f"❌ 音声認識エラー: {transcribe_error}")
                         
                         # 一時ファイルを削除
-                        os.unlink(temp_file)
+                        try:
+                            os.unlink(temp_file)
+                        except:
+                            pass
                     print("-" * 50)
                 else:
                     print("録音中ではありません。")
