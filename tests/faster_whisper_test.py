@@ -13,11 +13,49 @@ import time
 import threading
 from faster_whisper import WhisperModel
 
-# 設定
-CHUNK = 1024
-FORMAT = pyaudio.paInt16
-CHANNELS = 1
-RATE = 16000  # Whisper推奨の16kHz
+# =============================================================================
+# 🚀 高速化設定パラメータ（ここを編集して速度と精度を調整）
+# =============================================================================
+
+# モデル設定（高速化の基盤）
+MODEL_CONFIG = {
+    "model_size": "medium",        # モデルサイズ: "tiny"|"base"|"small"|"medium"|"large" (大きいほど精度↑速度↓)
+    "device": "cpu",               # デバイス: "cpu"|"cuda" (GPU使用時は"cuda")
+    "compute_type": "int8",        # 計算精度: "int8"|"float16"|"float32" (int8が最速)
+    "cpu_threads": 8,              # CPUスレッド数: 1-16 (物理コア数以内で多くするほど高速)
+    "num_workers": 1               # ワーカー数: 1 (メモリ使用量を抑えるため1推奨)
+}
+
+# 認識パラメータ（速度重視のチューニング）
+TRANSCRIBE_CONFIG = {
+    "language": "ja",              # 言語指定（固定）
+    "beam_size": 1,                # ビームサーチサイズ: 1=greedy(最速), 5=高精度 (1が最速)
+    "temperature": 0.0,            # 温度: 0.0=決定論的(高速), 1.0=多様性重視
+    "compression_ratio_threshold": 2.0,  # 圧縮率閾値: 2.4(高精度)→2.0(高速)
+    "log_prob_threshold": -0.8,    # 確率閾値: -1.0(高精度)→-0.8(高速)
+    "no_speech_threshold": 0.4,    # 無音判定閾値: 0.6(高精度)→0.4(高速)
+    "condition_on_previous_text": False,  # 前のテキスト依存: False(高速)
+    "initial_prompt": "以下は日本語の音声です。",  # 言語コンテキスト
+    "word_timestamps": False,      # 単語タイムスタンプ: False(高速), True(高精度)
+    "vad_filter": True,           # Voice Activity Detection: True(高速)
+    "vad_parameters": {            # VAD詳細設定
+        "min_silence_duration_ms": 800,  # 無音区間: 500ms(高精度)→800ms(高速)
+        "speech_pad_ms": 50,       # 音声パディング: 100ms→50ms(高速)
+        "threshold": 0.5           # VAD閾値: 0.5(積極的フィルタリング)
+    }
+}
+
+# 音声設定（固定）
+AUDIO_CONFIG = {
+    "chunk": 1024,
+    "format": pyaudio.paInt16,
+    "channels": 1,
+    "rate": 16000  # Whisper推奨16kHz
+}
+
+# =============================================================================
+# 以下はプログラム本体（高速化設定は上部で変更してください）
+# =============================================================================
 
 def calculate_confidence_metrics(segments, info):
     """セグメントから信頼度メトリクスを計算"""
@@ -98,11 +136,11 @@ class AudioRecorder:
 
         self.frames = []
         self.stream = self.audio.open(
-            format=FORMAT,
-            channels=CHANNELS,
-            rate=RATE,
+            format=AUDIO_CONFIG["format"],
+            channels=AUDIO_CONFIG["channels"],
+            rate=AUDIO_CONFIG["rate"],
             input=True,
-            frames_per_buffer=CHUNK
+            frames_per_buffer=AUDIO_CONFIG["chunk"]
         )
         self.is_recording = True
         print("録音を開始しました。'stop' と入力して終了してください。")
@@ -117,7 +155,7 @@ class AudioRecorder:
         frame_count = 0
         while self.is_recording:
             try:
-                data = self.stream.read(CHUNK, exception_on_overflow=False)
+                data = self.stream.read(AUDIO_CONFIG["chunk"], exception_on_overflow=False)
                 self.frames.append(data)
                 frame_count += 1
                 
@@ -157,9 +195,9 @@ class AudioRecorder:
         with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as temp_file:
             temp_filename = temp_file.name
             wf = wave.open(temp_filename, 'wb')
-            wf.setnchannels(CHANNELS)
-            wf.setsampwidth(self.audio.get_sample_size(FORMAT))
-            wf.setframerate(RATE)
+            wf.setnchannels(AUDIO_CONFIG["channels"])
+            wf.setsampwidth(self.audio.get_sample_size(AUDIO_CONFIG["format"]))
+            wf.setframerate(AUDIO_CONFIG["rate"])
             wf.writeframes(b''.join(self.frames))
             wf.close()
 
@@ -169,7 +207,7 @@ class AudioRecorder:
     def record_chunk(self):
         if self.is_recording:
             try:
-                data = self.stream.read(CHUNK, exception_on_overflow=False)
+                data = self.stream.read(AUDIO_CONFIG["chunk"], exception_on_overflow=False)
                 self.frames.append(data)
                 # 音声レベルをチェック
                 import numpy as np
@@ -210,11 +248,11 @@ def main():
     # Whisperモデルをロード（高速化設定）
     print("Whisperモデルをロード中...")
     model = WhisperModel(
-        "medium",  # ここはゆずれない
-        device="cpu",
-        compute_type="int8",
-        cpu_threads=8,  # CPUスレッド数を8に増加（10コア中）
-        num_workers=1
+        MODEL_CONFIG["model_size"],
+        device=MODEL_CONFIG["device"],
+        compute_type=MODEL_CONFIG["compute_type"],
+        cpu_threads=MODEL_CONFIG["cpu_threads"],
+        num_workers=MODEL_CONFIG["num_workers"]
     )
     print("モデルロード完了")
 
@@ -253,21 +291,17 @@ def main():
                         try:
                             segments, info = model.transcribe(
                                 temp_file,
-                                language="ja",              # 日本語指定
-                                beam_size=1,                # ビームサーチを1に設定（greedy decoding）で最大速度
-                                temperature=0.0,            # 決定論的出力
-                                compression_ratio_threshold=2.0,  # 圧縮率閾値を緩く（2.4→2.0）で処理軽減
-                                log_prob_threshold=-0.8,    # 確率閾値を緩く（-1.0→-0.8）で高速化
-                                no_speech_threshold=0.4,    # 無音判定をさらに緩く（0.3→0.4）
-                                condition_on_previous_text=False,
-                                initial_prompt="以下は日本語の音声です。",
-                                word_timestamps=False,
-                                vad_filter=True,
-                                vad_parameters=dict(
-                                    min_silence_duration_ms=800,  # 無音区間を長く（500→800ms）で処理軽減
-                                    speech_pad_ms=50,       # 音声パディングをさらに短縮
-                                    threshold=0.5           # VAD閾値を高くしてより積極的なフィルタリング
-                                )
+                                language=TRANSCRIBE_CONFIG["language"],
+                                beam_size=TRANSCRIBE_CONFIG["beam_size"],
+                                temperature=TRANSCRIBE_CONFIG["temperature"],
+                                compression_ratio_threshold=TRANSCRIBE_CONFIG["compression_ratio_threshold"],
+                                log_prob_threshold=TRANSCRIBE_CONFIG["log_prob_threshold"],
+                                no_speech_threshold=TRANSCRIBE_CONFIG["no_speech_threshold"],
+                                condition_on_previous_text=TRANSCRIBE_CONFIG["condition_on_previous_text"],
+                                initial_prompt=TRANSCRIBE_CONFIG["initial_prompt"],
+                                word_timestamps=TRANSCRIBE_CONFIG["word_timestamps"],
+                                vad_filter=TRANSCRIBE_CONFIG["vad_filter"],
+                                vad_parameters=TRANSCRIBE_CONFIG["vad_parameters"]
                             )
                             
                             # セグメントからテキストを抽出

@@ -116,3 +116,8 @@ python3 tests/llm_chat_async_test.py
 pip install faster-whisper
 ```
 
+### 4. Pythonファイルのコンパイル
+``` bash
+python3 -m py_compile tests/faster_whisper_test.py
+```
+これで多少は起動動作が速くなる（数％程度）
