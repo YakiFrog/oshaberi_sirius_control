@@ -41,28 +41,6 @@ class AudioQueryPhonemeAnalyzer:
             'e': 'a',    # え（aに近い）
             'o': 'o',    # お
             
-            # 子音（口の形に影響を与えるもの）
-            'k': 'a',    # か行（aに近い）
-            'g': 'a',    # が行
-            's': 'i',    # さ行（iに近い）
-            'z': 'i',    # ざ行
-            't': 'a',    # た行
-            'd': 'a',    # だ行
-            'n': 'o',    # な行（oに近い）
-            'h': 'o',    # は行
-            'b': 'o',    # ば行
-            'p': 'o',    # ぱ行
-            'm': 'o',    # ま行
-            'y': 'a',    # や行
-            'r': 'a',    # ら行
-            'w': 'o',    # わ行
-            'f': 'o',    # ふ
-            'v': 'o',    # ヴ
-            'ch': 'i',   # ち（iに近い）
-            'sh': 'i',   # し
-            'j': 'i',    # じ
-            'ts': 'a',   # つ
-            
             # 子音＋母音の組み合わせ
             # あ系
             'ka': 'a', 'ga': 'a', 'sa': 'a', 'za': 'a', 'ta': 'a', 'da': 'a',
@@ -99,11 +77,6 @@ class AudioQueryPhonemeAnalyzer:
             # 長音・その他
             'ー': None,
             'っ': None,
-            ',': None,      # 句読点
-            '、': None,
-            '。': None,
-            '.': None,
-            ' ': None,      # スペース
         }
     
     def analyze_from_audio_query(self, text: str, style_id: int):
@@ -127,8 +100,9 @@ class AudioQueryPhonemeAnalyzer:
                                 consonant_phoneme = mora.consonant
                                 consonant_duration = getattr(mora, 'consonant_length', 0.1) or 0.1
                                 
-                                mouth_shape = self.phoneme_to_mouth.get(consonant_phoneme, 'a')  # デフォルトを'a'に
-                                phoneme_timeline.append((current_time, mouth_shape, consonant_duration))
+                                mouth_shape = self.phoneme_to_mouth.get(consonant_phoneme, None)
+                                if mouth_shape:
+                                    phoneme_timeline.append((current_time, mouth_shape, consonant_duration))
                                 current_time += consonant_duration
                             
                             # 母音処理
@@ -144,7 +118,7 @@ class AudioQueryPhonemeAnalyzer:
                 if hasattr(accent_phrase, 'pause_mora') and accent_phrase.pause_mora:
                     pause_duration = getattr(accent_phrase.pause_mora, 'vowel_length', 0.0) or 0.0
                     if pause_duration > 0:
-                        phoneme_timeline.append((current_time, None, pause_duration))
+                        phoneme_timeline.append((current_time, 'i', pause_duration))
                         current_time += pause_duration
             
             print(f"✅ AudioQuery音韻解析完了: {len(phoneme_timeline)}音韻, 総時間: {current_time:.2f}秒")
@@ -161,9 +135,7 @@ class AudioQueryPhonemeAnalyzer:
         
         for time_pos, mouth_shape, duration in phoneme_timeline:
             if mouth_shape:  # Noneでない場合のみ追加
-                mouth_sequence.append((time_pos, mouth_shape, duration))
-            else:
-                print(f"⚠️  無音音韻をスキップ: {time_pos:.2f}s (duration: {duration:.2f}s)")
+                mouth_sequence.append((mouth_shape, duration))
         
         return mouth_sequence
 
@@ -229,21 +201,15 @@ class AudioQueryPhonemeAnalyzer:
         
         # 1. AudioQueryで音韻情報を取得
         try:
-            audio_query = self.synthesizer.create_audio_query(text, style_id)
+            audio_query = self.synthesizer.audio_query(text, style_id)
             print("✅ AudioQuery取得成功")
         except Exception as e:
             print(f"❌ AudioQuery取得エラー: {e}")
             print("🔄 文字ベース解析にフォールバック")
             return self.speak_with_lipsync_fallback(text, style_id)
         
-        # AudioQuery音韻解析を使用
-        try:
-            mouth_sequence = self.analyzer.get_mouth_shape_sequence(text, style_id)
-            print("✅ AudioQuery音韻解析成功")
-        except Exception as e:
-            print(f"❌ AudioQuery音韻解析エラー: {e}")
-            print("🔄 文字ベース解析にフォールバック")
-            return self.speak_with_lipsync_fallback(text, style_id)
+        # 2. 音韻解析（AudioQuery使用）
+        mouth_sequence = self.audioquery_to_mouth_sequence(audio_query)
         
         print("📝 口パターンシーケンス:")
         mouth_pattern_count = 0
@@ -297,9 +263,27 @@ class AudioQueryPhonemeAnalyzer:
         print("✅ 発話完了\n")
 
     def audioquery_to_mouth_sequence(self, audio_query):
-        """AudioQueryから口の動きシーケンスを生成（廃止予定）"""
-        # このメソッドは使われていないので、get_mouth_shape_sequenceを使う
-        return self.analyzer.get_mouth_shape_sequence("", 0)  # ダミー
+        """AudioQueryから口の動きシーケンスを生成"""
+        sequence = []
+        current_time = 0.0
+        
+        for accent_phrase in audio_query.accent_phrases:
+            for mora in accent_phrase.moras:
+                # 子音処理
+                if mora.consonant:
+                    duration = mora.consonant_length if mora.consonant_length else 0.1
+                    mouth_shape = self.phoneme_to_mouth_shape(mora.consonant)
+                    sequence.append((current_time, mouth_shape, duration))
+                    current_time += duration
+                
+                # 母音処理
+                if mora.vowel:
+                    duration = mora.vowel_length if mora.vowel_length else 0.1
+                    mouth_shape = self.phoneme_to_mouth_shape(mora.vowel)
+                    sequence.append((current_time, mouth_shape, duration))
+                    current_time += duration
+        
+        return sequence
 
     def speak_with_lipsync_fallback(self, text, style_id=0):
         """フォールバック: 文字ベースリップシンク"""
@@ -515,8 +499,8 @@ class LipSyncController:
         print("📝 口パターンシーケンス:")
         mouth_pattern_count = 0
         none_pattern_count = 0
-        for i, (seq_time, mouth_shape, duration) in enumerate(mouth_sequence[:15]):  # 最初の15個まで表示
-            print(f"  {seq_time:.2f}s: {mouth_shape} ({duration:.2f}s)")
+        for i, (mouth_shape, duration) in enumerate(mouth_sequence[:15]):  # 最初の15個まで表示
+            print(f"  {i+1:2d}. {mouth_shape} ({duration:.2f}s)")
             if mouth_shape is not None:
                 mouth_pattern_count += 1
             else:
@@ -524,7 +508,7 @@ class LipSyncController:
         
         if len(mouth_sequence) > 15:
             remaining = len(mouth_sequence) - 15
-            for seq_time, mouth_shape, duration in mouth_sequence[15:]:
+            for mouth_shape, duration in mouth_sequence[15:]:
                 if mouth_shape is not None:
                     mouth_pattern_count += 1
                 else:
@@ -549,14 +533,16 @@ class LipSyncController:
         
         # リップシンク実行
         start_time = time_module.time()
+        current_time = 0.0
         
-        for seq_time, mouth_shape, duration in mouth_sequence:
+        for mouth_shape, duration in mouth_sequence:
             # 口パターン設定（正しい形式に変換）
             server_pattern = f"mouth_{mouth_shape}" if mouth_shape else None
             
             # タイミング待機
+            target_time = current_time
             elapsed = time_module.time() - start_time
-            wait_time = seq_time - elapsed
+            wait_time = target_time - elapsed
             if wait_time > 0:
                 time_module.sleep(wait_time)
             
@@ -567,79 +553,11 @@ class LipSyncController:
             
             # デバッグ出力
             if server_pattern:
-                print(f"👄 {seq_time:.2f}s: {server_pattern} (shape: {mouth_shape})")
+                print(f"👄 {target_time:.2f}s: {server_pattern} (shape: {mouth_shape})")
+            
+            current_time += duration
         
         # 終了時に口をリセット
-        time_module.sleep(0.5)
-        self.set_mouth_pattern(None)
-        print("✅ 発話完了\n")
-
-    def speak_with_word_based_lipsync(self, text, style_id=0):
-        """単語ベースリップシンク（各単語の発音時間を測定して調整）"""
-        print(f"🎤 単語ベース合成: 「{text}」")
-        print(f"📏 文字数: {len(text)}文字")
-        
-        # 1. 音声合成（AudioQueryから総時間を取得）
-        try:
-            audio_query = self.synthesizer.create_audio_query(text, style_id)
-            wav_data = self.synthesizer.synthesis(audio_query, style_id)
-            print("✅ 音声合成成功")
-        except Exception as e:
-            print(f"❌ 音声合成エラー: {e}")
-            return
-        
-        # 2. 総発音時間を取得
-        total_duration = self._get_audio_duration_from_wav(wav_data)
-        print(f"📊 総発音時間: {total_duration:.2f}秒")
-        
-        # 3. テキストを単語に分割
-        words = self._split_text_into_words(text)
-        print(f"📝 単語分割: {words}")
-        
-        # 4. 各単語の発音時間を推定
-        word_durations = self._estimate_word_durations(words, total_duration)
-        print("📝 単語タイミング:")
-        current_time = 0.0
-        for word, duration in zip(words, word_durations):
-            print(f"  {current_time:.2f}s - {current_time + duration:.2f}s: '{word}' ({duration:.2f}s)")
-            current_time += duration
-        
-        # 5. 各単語の口パターンを決定
-        word_mouth_patterns = []
-        for word in words:
-            pattern = self._get_word_mouth_pattern(word)
-            word_mouth_patterns.append(pattern)
-            print(f"🔤 単語 '{word}' → 口パターン: {pattern}")
-        
-        # 6. 音声再生開始
-        audio_thread = threading.Thread(target=self.play_audio, args=(wav_data,))
-        audio_thread.daemon = True
-        audio_thread.start()
-        
-        # 7. 単語ベースリップシンク実行
-        start_time = time_module.time()
-        current_time = 0.0
-        
-        for word, duration, mouth_pattern in zip(words, word_durations, word_mouth_patterns):
-            # 単語の発音期間中に口パターンを設定
-            pattern_start_time = current_time
-            
-            # 口パターンがNoneの場合はスキップ（句読点など）
-            if mouth_pattern is None:
-                print(f"⏭️  {pattern_start_time:.2f}s: スキップ (単語: '{word}', 期間: {duration:.2f}s)")
-            else:
-                server_pattern = f"mouth_{mouth_pattern}"
-                success = self.set_mouth_pattern(server_pattern)
-                print(f"👄 {pattern_start_time:.2f}s: {server_pattern} (単語: '{word}', 期間: {duration:.2f}s)")
-            
-            # 次の単語まで待機
-            current_time += duration
-            elapsed = time_module.time() - start_time
-            wait_time = current_time - elapsed
-            if wait_time > 0:
-                time_module.sleep(wait_time)
-        
-        # 8. 終了時に口をリセット
         time_module.sleep(0.5)
         self.set_mouth_pattern(None)
         print("✅ 発話完了\n")
@@ -763,125 +681,6 @@ class LipSyncController:
         else:
             return None
 
-    def _get_audio_duration_from_wav(self, wav_data):
-        """WAVデータから音声の長さを取得"""
-        try:
-            import io
-            import wave
-            
-            # WAVデータをメモリから読み込み
-            wav_buffer = io.BytesIO(wav_data)
-            with wave.open(wav_buffer, 'rb') as wav_file:
-                frames = wav_file.getnframes()
-                rate = wav_file.getframerate()
-                duration = frames / float(rate)
-                return duration
-        except Exception as e:
-            print(f"⚠️  WAV時間取得エラー: {e}")
-            # フォールバック: 文字数ベースの推定
-            return len(wav_data) / 44100.0  # 仮定のサンプリングレート
-
-    def _split_text_into_words(self, text):
-        """テキストを単語に分割（日本語対応）"""
-        import re
-        
-        # 句読点で分割し、空の要素を除去
-        words = re.split(r'([、。,.！？!?\s]+)', text)
-        words = [word.strip() for word in words if word.strip()]
-        
-        # さらに細かく分割（漢字や長い単語を分割）
-        refined_words = []
-        for word in words:
-            if len(word) > 3:  # 3文字以上の単語はさらに分割
-                # 漢字とひらがなの境界で分割
-                parts = re.split(r'([^\u3040-\u309f\u30a0-\u30ff]+)', word)
-                parts = [part for part in parts if part]
-                refined_words.extend(parts)
-            else:
-                refined_words.append(word)
-        
-        return refined_words
-
-    def _estimate_word_durations(self, words, total_duration):
-        """各単語の発音時間を推定"""
-        if not words:
-            return []
-        
-        # 各単語の文字数に基づいて時間を分配
-        total_chars = 0
-        punctuation_words = []
-        
-        for word in words:
-            if word in [',', '、', '。', '.', '!', '！', '?', '？']:
-                punctuation_words.append(word)
-            else:
-                total_chars += len(word)
-        
-        # 句読点の時間（固定で短く）
-        punctuation_duration = 0.15  # 句読点1つあたり0.15秒
-        punctuation_total_time = len(punctuation_words) * punctuation_duration
-        
-        # 実単語の総時間
-        word_total_time = total_duration - punctuation_total_time
-        if word_total_time < 0:
-            word_total_time = total_duration * 0.8  # 最低でも80%は単語に
-            punctuation_total_time = total_duration * 0.2
-        
-        # 文字数に比例して時間を分配（ベース時間 + 文字数ボーナス）
-        base_duration_per_char = 0.08  # 1文字あたりの基本時間
-        min_duration_per_word = 0.2    # 単語の最小時間
-        
-        word_durations = []
-        for word in words:
-            if word in [',', '、', '。', '.', '!', '！', '?', '？']:
-                # 句読点は固定時間
-                word_durations.append(punctuation_duration)
-            else:
-                char_based_duration = len(word) * base_duration_per_char
-                duration = max(char_based_duration, min_duration_per_word)
-                word_durations.append(duration)
-        
-        # 実単語の時間を調整してフィットさせる
-        current_word_total = sum(d for w, d in zip(words, word_durations) 
-                               if w not in [',', '、', '。', '.', '!', '！', '?', '？'])
-        
-        if current_word_total > 0 and word_total_time > 0:
-            scale_factor = word_total_time / current_word_total
-            word_durations = [d * scale_factor if w not in [',', '、', '。', '.', '!', '！', '?', '？'] else d 
-                            for w, d in zip(words, word_durations)]
-        
-        return word_durations
-
-    def _get_word_mouth_pattern(self, word):
-        """単語から口パターンを決定"""
-        if not word or word in [',', '、', '。', '.', '!', '！', '?', '？']:
-            return None  # 句読点や空文字の場合は口パターンを設定しない
-        
-        # 単語の最初の文字でパターンを決定
-        first_char = word[0]
-        
-        # 漢字の場合は読みに変換
-        if self.kakasi_converter and self._is_kanji(first_char):
-            try:
-                converted = self.kakasi_converter.convert(first_char)
-                if converted:
-                    hiragana_reading = ''.join([item['hira'] for item in converted])
-                    if hiragana_reading:
-                        first_char = hiragana_reading[0]
-            except Exception as e:
-                pass  # 変換失敗時は元の文字を使用
-        
-        # 母音でパターンを決定
-        if first_char in 'あかがさざただなはばぱまやらわアカガサザタダナハバパマヤラワ':
-            return 'a'
-        elif first_char in 'いきぎしじちぢにひびぴみりイキギシジチヂニヒビピミリ':
-            return 'i'
-        elif first_char in 'うえおこごそぞとどのほぼぽもよろをンウエオコゴソゾトドノホボポモヨロヲン':
-            return 'o'
-        else:
-            # その他の文字の場合は'a'をデフォルトに
-            return 'a'
-
 def main():
     print("🎭 シンプルリップシンクテスト")
     print("=" * 40)
@@ -891,7 +690,10 @@ def main():
     
     # テストセリフ
     test_phrases = [
-        "今日今日今日今日今日今日"
+        "今日恐々恐々",  # 漢字テスト
+        "こんにちは、僕の名前はシリウスです",
+        "今日はいい天気ですね",
+        "ありがとうございます"
     ]
     
     print("🎤 テスト開始（シリウスの表情サーバーが起動している必要があります）")
