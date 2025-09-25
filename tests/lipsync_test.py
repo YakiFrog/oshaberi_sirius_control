@@ -12,6 +12,11 @@ import urllib.parse
 import json
 from pprint import pprint
 from voicevox_core.blocking import Onnxruntime, OpenJtalk, Synthesizer, VoiceModelFile
+try:
+    import pykakasi
+except ImportError:
+    pykakasi = None
+    print("⚠️  pykakasiがインストールされていません。漢字の読み変換は利用できません。")
 
 # VOICEVOX Core設定
 VOICEVOX_ONNXRUNTIME_PATH = "voicevox_core/onnxruntime/lib/" + Onnxruntime.LIB_VERSIONED_FILENAME
@@ -34,6 +39,18 @@ class LipSyncController:
         with VoiceModelFile.open(MODEL_PATH) as model:
             self.synthesizer.load_voice_model(model)
         print("✅ VOICEVOX準備完了")
+        
+        # pykakasi初期化（漢字読み変換用）
+        self.kakasi_converter = None
+        if pykakasi:
+            try:
+                # 新しいpykakasiのAPI使用
+                kks = pykakasi.kakasi()
+                self.kakasi_converter = kks
+                print("✅ pykakasi漢字読み変換準備完了")
+            except Exception as e:
+                print(f"⚠️  pykakasi初期化エラー: {e}")
+                self.kakasi_converter = None
 
     def phoneme_to_mouth_shape(self, phoneme):
         """音韻から口の形にマッピング"""
@@ -91,9 +108,99 @@ class LipSyncController:
             print(f"❌ 音声再生エラー: {e}")
 
     def speak_with_lipsync(self, text, style_id=0):
-        """音声合成 + リップシンク"""
+        """音声合成 + リップシンク（AudioQuery使用版）"""
         print(f"🎤 合成: 「{text}」")
         print(f"📏 文字数: {len(text)}文字")
+        
+        # 1. AudioQueryで音韻情報を取得
+        try:
+            audio_query = self.synthesizer.audio_query(text, style_id)
+            print("✅ AudioQuery取得成功")
+        except Exception as e:
+            print(f"❌ AudioQuery取得エラー: {e}")
+            print("🔄 文字ベース解析にフォールバック")
+            return self.speak_with_lipsync_fallback(text, style_id)
+        
+        # 2. 音韻解析（AudioQuery使用）
+        mouth_sequence = self.audioquery_to_mouth_sequence(audio_query)
+        
+        print("📝 口パターンシーケンス:")
+        mouth_pattern_count = 0
+        none_pattern_count = 0
+        for i, (time, shape, duration) in enumerate(mouth_sequence[:15]):  # 最初の15個まで表示
+            print(f"  {time:.2f}s: {shape} ({duration:.2f}s)")
+            if shape is not None:
+                mouth_pattern_count += 1
+            else:
+                none_pattern_count += 1
+        
+        if len(mouth_sequence) > 15:
+            remaining = len(mouth_sequence) - 15
+            for time, shape, duration in mouth_sequence[15:]:
+                if shape is not None:
+                    mouth_pattern_count += 1
+                else:
+                    none_pattern_count += 1
+            print(f"  ... 他{remaining}個")
+        
+        print(f"📊 統計: 総パターン数{len(mouth_sequence)}, 口パターン{mouth_pattern_count}個, None{none_pattern_count}個")
+        
+        # 3. 音声合成
+        wav_data = self.synthesizer.synthesis(audio_query, style_id)
+        
+        # 4. 音声再生開始
+        audio_thread = threading.Thread(target=self.play_audio, args=(wav_data,))
+        audio_thread.daemon = True
+        audio_thread.start()
+        
+        # 5. リップシンク実行
+        start_time = time_module.time()
+        
+        for seq_time, mouth_shape, duration in mouth_sequence:
+            # タイミング待機
+            elapsed = time_module.time() - start_time
+            wait_time = seq_time - elapsed
+            if wait_time > 0:
+                time_module.sleep(wait_time)
+            
+            # 口パターン設定
+            self.set_mouth_pattern(mouth_shape)
+            
+            # デバッグ出力
+            if mouth_shape:
+                print(f"👄 {seq_time:.2f}s: {mouth_shape}")
+        
+        # 6. 終了時に口をリセット
+        time_module.sleep(0.5)
+        self.set_mouth_pattern(None)
+        print("✅ 発話完了\n")
+
+    def audioquery_to_mouth_sequence(self, audio_query):
+        """AudioQueryから口の動きシーケンスを生成"""
+        sequence = []
+        current_time = 0.0
+        
+        for accent_phrase in audio_query.accent_phrases:
+            for mora in accent_phrase.moras:
+                # 子音処理
+                if mora.consonant:
+                    duration = mora.consonant_length if mora.consonant_length else 0.1
+                    mouth_shape = self.phoneme_to_mouth_shape(mora.consonant)
+                    sequence.append((current_time, mouth_shape, duration))
+                    current_time += duration
+                
+                # 母音処理
+                if mora.vowel:
+                    duration = mora.vowel_length if mora.vowel_length else 0.1
+                    mouth_shape = self.phoneme_to_mouth_shape(mora.vowel)
+                    sequence.append((current_time, mouth_shape, duration))
+                    current_time += duration
+        
+        return sequence
+
+    def speak_with_lipsync_fallback(self, text, style_id=0):
+        """フォールバック: 文字ベースリップシンク"""
+        print(f"🔄 フォールバック処理: 「{text}」")
         
         # 1. 音声合成（シンプル版）
         wav_data = self.synthesizer.tts(text, style_id)
@@ -101,10 +208,10 @@ class LipSyncController:
         # 2. シンプルな音韻解析（文字ベース）
         mouth_sequence = self.text_to_mouth_sequence(text)
         
-        print("📝 口パターンシーケンス:")
+        print("📝 口パターンシーケンス (フォールバック):")
         mouth_pattern_count = 0
         none_pattern_count = 0
-        for i, (time, shape, duration) in enumerate(mouth_sequence[:15]):  # 最初の15個まで表示
+        for i, (time, shape, duration) in enumerate(mouth_sequence[:15]):
             print(f"  {time:.2f}s: {shape} ({duration:.2f}s)")
             if shape is not None:
                 mouth_pattern_count += 1
@@ -164,11 +271,36 @@ class LipSyncController:
         return sequence
 
     def char_to_mouth_shape(self, char):
-        """文字から口の形を推定"""
+        """文字から口の形を推定（pykakasi漢字読み対応版）"""
+        # 漢字の場合はpykakasiで読みに変換
+        if self.kakasi_converter and self._is_kanji(char):
+            try:
+                # 新しいpykakasiのAPI使用
+                converted = self.kakasi_converter.convert(char)
+                if converted:
+                    # 変換結果から'hira'（ひらがな）を取得
+                    hiragana_reading = ''.join([item['hira'] for item in converted])
+                    if hiragana_reading and hiragana_reading != char:
+                        # 読みの最初の文字で口の形を判定
+                        first_char = hiragana_reading[0]
+                        print(f"🔤 漢字変換: '{char}' → '{hiragana_reading}' → 判定文字:'{first_char}'")
+                        return self._hiragana_to_mouth_shape(first_char)
+            except Exception as e:
+                print(f"⚠️  漢字読み変換エラー: {char} - {e}")
+        
+        # ひらがな・カタカナ・その他の処理
+        return self._hiragana_to_mouth_shape(char)
+    
+    def _is_kanji(self, char):
+        """文字が漢字かどうか判定"""
+        return '\u4e00' <= char <= '\u9faf'
+    
+    def _hiragana_to_mouth_shape(self, char):
+        """ひらがな・カタカナから口の形を判定"""
         # ひらがな・カタカナの母音判定
         a_sounds = 'あかがさざただなはばぱまやらわアカガサザタダナハバパマヤラワ'
         i_sounds = 'いきぎしじちぢにひびぴみりイキギシジチヂニヒビピミリ'
-        o_sounds = 'おこごそぞとどのほぼぽもよろをンおこごそぞとどのほぼぽもよろをンオコゴソゾトドノホボポモヨロヲン'
+        o_sounds = 'うえおこごそぞとどのほぼぽもよろをンウエオコゴソゾトドノホボポモヨロヲン'
         
         if char in a_sounds:
             return 'mouth_a'
@@ -188,11 +320,10 @@ def main():
     
     # テストセリフ
     test_phrases = [
-        # "こんにちは、僕の名前はシリウスです",
-        # "今日はいい天気ですね",
-        # "ありがとうございます",
-        # "さようなら"
-        "今日恐々恐々"
+        "今日恐々恐々",  # 漢字テスト
+        "こんにちは、僕の名前はシリウスです",
+        "今日はいい天気ですね",
+        "ありがとうございます"
     ]
     
     print("🎤 テスト開始（シリウスの表情サーバーが起動している必要があります）")
