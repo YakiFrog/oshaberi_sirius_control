@@ -21,7 +21,7 @@ except ImportError:
 # VOICEVOX Core設定
 VOICEVOX_ONNXRUNTIME_PATH = "voicevox_core/onnxruntime/lib/" + Onnxruntime.LIB_VERSIONED_FILENAME
 OPEN_JTALK_DICT_DIR = "voicevox_core/dict/open_jtalk_dic_utf_8-1.11"
-MODEL_PATH = "voicevox_core/models/vvms/0.vvm"
+MODEL_PATH = "voicevox_core/models/vvms/13.vvm"  # 13.vvmを使用
 
 # シリウス表情制御API
 SIRIUS_API_URL = "http://localhost:8080"
@@ -438,7 +438,7 @@ class LipSyncController:
             OpenJtalk(OPEN_JTALK_DICT_DIR)
         )
         
-        # 音声モデル読み込み
+        # 音声モデル読み込み（13.vvmを使用）
         with VoiceModelFile.open(MODEL_PATH) as model:
             self.synthesizer.load_voice_model(model)
         print("✅ VOICEVOX準備完了")
@@ -457,6 +457,14 @@ class LipSyncController:
         
         # AudioQuery音韻解析器を初期化
         self.analyzer = AudioQueryPhonemeAnalyzer(self.synthesizer)
+        
+        # 音声パラメータ（ハードコードされた設定）
+        self.style_id = 54
+        self.speed_scale = 1.0
+        self.pitch_scale = 0.0
+        self.intonation_scale = 0.9
+        
+        print(f"✅ 音声設定: style_id={self.style_id}, speed={self.speed_scale}, pitch={self.pitch_scale}, intonation={self.intonation_scale}")
     
     def phoneme_to_mouth_shape(self, phoneme):
         """音韻から口の形にマッピング"""
@@ -560,16 +568,20 @@ class LipSyncController:
         thread = threading.Thread(target=_set_pattern, daemon=True)
         thread.start()
 
-    def speak_with_lipsync(self, text, style_id=0, speed_scale=1.0, restore_original_mouth=True):
+    def speak_with_lipsync(self, text, style_id=None, speed_scale=None, restore_original_mouth=True):
         """音声合成 + リップシンク（超精密同期版）
         
         Args:
             text: 合成するテキスト
-            style_id: VOICEVOXスタイルID
-            speed_scale: 速度スケール
+            style_id: VOICEVOXスタイルID（Noneの場合はデフォルトを使用）
+            speed_scale: 速度スケール（Noneの場合はデフォルトを使用）
             restore_original_mouth: 発話後に口パターンをリセットして表情の自然な口パターンに戻すかどうか
         """
-        print(f"🎤 合成: 「{text}」 (速度: {speed_scale}x)")
+        # パラメータのデフォルト設定
+        style_id = style_id or self.style_id
+        speed_scale = speed_scale or self.speed_scale
+        
+        print(f"�🎤 合成: 「{text}」 (速度: {speed_scale}x, スタイル: {style_id})")
         print(f"📏 文字数: {len(text)}文字")
         
         # 1. 発話前の元の口パターンを保存
@@ -1031,16 +1043,13 @@ class LipSyncController:
             return 'a'
 
 def main():
-    print("🎭 精密リップシンクテスト（元の口パターン復元機能付き）")
-    print("=" * 50)
+    import sys
     
-    # リップシンクコントローラー初期化
+    print("🎭 精密リップシンクテスト（ハードコード設定・元の口パターン復元機能付き）")
+    print("=" * 60)
+    
+    # リップシンクコントローラー初期化（JSONファイル不要）
     controller = LipSyncController()
-    
-    # テストセリフ
-    test_phrases = [
-        "こんにちは、今日はいい天気ですね。"
-    ]
     
     print("🎤 テスト開始（シリウスの表情サーバーが起動している必要があります）")
     print(f"📡 API URL: {SIRIUS_API_URL}")
@@ -1052,14 +1061,13 @@ def main():
         controller.set_mouth_pattern("mouth_a")
         time_module.sleep(0.5)  # 設定が反映されるまで待機
         
-        print("\n--- 精密同期テスト（元の口パターン復元機能） ---")
-        for i, text in enumerate(test_phrases, 1):
-            print(f"\n--- テスト {i}/{len(test_phrases)} ---")
-            controller.speak_with_lipsync(text, speed_scale=1.0, restore_original_mouth=True)
-            
-            if i < len(test_phrases):
-                print("⏳ 2秒待機...")
-                time_module.sleep(2)
+        print("\n--- 精密同期テスト（ハードコード設定・元の口パターン復元機能） ---")
+        
+        # テストフレーズを使用
+        test_text = "こんにちは、シリウスです。リップシンクのテストを行っています。"
+        
+        print(f"🎭 テスト発話: '{test_text}'")
+        controller.speak_with_lipsync(test_text, restore_original_mouth=True)
         
         print("\n--- 復元機能テスト完了 ---")
         print("💡 発話後に口パターンがリセットされ、表情の自然な口パターンに戻っているはずです")
@@ -1070,6 +1078,8 @@ def main():
         print("\n🛑 テスト中止")
     except Exception as e:
         print(f"❌ エラー: {e}")
+        import traceback
+        traceback.print_exc()
 
 if __name__ == "__main__":
     main()

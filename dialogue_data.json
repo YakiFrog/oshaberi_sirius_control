@@ -1,0 +1,21 @@
+{
+  "dialogues": {
+    "1": {
+      "text": "僕の名前はシリウスです",
+      "enabled": true,
+      "style_id": 54,
+      "speed": 1.0,
+      "pitch": 0.0,
+      "intonation": 0.9,
+      "vvm_model": "13.vvm",
+      "description": "自己紹介"
+    }
+  },
+  "settings": {
+    "default_style_id": 54,
+    "default_speed": 1.0,
+    "default_pitch": 0.0,
+    "default_intonation": 0.9,
+    "dialogue_file_encoding": "utf-8"
+  }
+}
