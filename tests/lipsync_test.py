@@ -18,6 +18,14 @@ except ImportError:
     pykakasi = None
     print("⚠️  pykakasiがインストールされていません。漢字の読み変換は利用できません。")
 
+try:
+    import requests
+    from typing import Optional
+except ImportError:
+    requests = None
+    Optional = object  # ダミーオブジェクト
+    print("⚠️  requestsがインストールされていません。おしゃべりモード制御は利用できません。")
+
 # VOICEVOX Core設定
 VOICEVOX_ONNXRUNTIME_PATH = "voicevox_core/onnxruntime/lib/" + Onnxruntime.LIB_VERSIONED_FILENAME
 OPEN_JTALK_DICT_DIR = "voicevox_core/dict/open_jtalk_dic_utf_8-1.11"
@@ -306,10 +314,16 @@ class AudioQueryPhonemeAnalyzer:
             if mouth_shape:
                 print(f"👄 {seq_time:.2f}s: {mouth_shape}")
         
-        # 6. 終了時に口をリセット
-        time_module.sleep(0.5)
-        self.set_mouth_pattern(None)
-        print("✅ 発話完了\n")
+        # 6. 終了時に口をリセット（元の表情の自然な口パターンに戻す）
+        time_module.sleep(0.2)
+        
+        # 明示的に口パターンをNoneに設定して表情の自然な口の形に戻る
+        success = self.set_mouth_pattern(None)
+        if success:
+            print("✅ 発話完了（口を元の表情の自然な口パターンに戻しました）")
+        else:
+            print("⚠️ 口パターンのリセットに失敗しました")
+        print()
 
     def audioquery_to_mouth_sequence(self, audio_query):
         """AudioQueryから口の動きシーケンスを生成（廃止予定）"""
@@ -370,10 +384,14 @@ class AudioQueryPhonemeAnalyzer:
             if mouth_shape:
                 print(f"👄 {seq_time:.2f}s: {mouth_shape}")
         
-        # 5. 終了時に口をリセット
-        time_module.sleep(0.5)
-        self.set_mouth_pattern(None)
-        print("✅ 発話完了\n")
+        # 5. 終了時に口をリセット（元の表情の自然な口パターンに戻す）
+        time_module.sleep(0.2)
+        success = self.set_mouth_pattern(None)
+        if success:
+            print("✅ 発話完了（口を元の表情の自然な口パターンに戻しました）")
+        else:
+            print("⚠️ 口パターンのリセットに失敗しました")
+        print()
 
     def text_to_mouth_sequence(self, text):
         """テキストから口の動きシーケンスを生成（簡易版）"""
@@ -429,6 +447,123 @@ class AudioQueryPhonemeAnalyzer:
         else:
             return None
 
+class TalkingModeController:
+    """おしゃべりモード制御クラス"""
+    
+    def __init__(self, server_url="http://localhost:8080"):
+        self.server_url = server_url
+        self.is_talking_mode_active = False
+        self.last_mouth_pattern = None  # 冗長リクエストを防ぐ
+        
+        # 高速化のためのHTTPセッション設定
+        self.session = requests.Session()
+        self.session.headers.update({
+            'Content-Type': 'application/json',
+            'Connection': 'keep-alive'  # Keep-Aliveを有効にする
+        })
+        
+        # コネクションプールの設定
+        adapter = requests.adapters.HTTPAdapter(
+            pool_connections=1,  # プール内の接続数
+            pool_maxsize=1,      # プールの最大サイズ
+            max_retries=0        # リトライしない（高速化のため）
+        )
+        self.session.mount('http://', adapter)
+        self.session.mount('https://', adapter)
+    
+    def set_talking_mode(self, enabled: bool) -> bool:
+        """おしゃべりモードを設定"""
+        if self.is_talking_mode_active == enabled:
+            return True  # ログ出力も省略して高速化
+        
+        try:
+            response = self.session.post(
+                f"{self.server_url}/talking_mouth_mode",
+                json={'talking_mouth_mode': enabled},
+                timeout=0.1  # タイムアウトを極短に
+            )
+            
+            if response.status_code == 200:
+                self.is_talking_mode_active = enabled
+                return True
+            else:
+                print(f"❌ おしゃべりモード設定失敗: HTTP {response.status_code}")
+                return False
+                
+        except Exception as e:
+            print(f"❌ おしゃべりモード設定エラー: {e}")
+            return False
+    
+    def set_mouth_pattern_fast(self, pattern) -> bool:
+        """高速口形状設定（冗長リクエスト排除）"""
+        # 同じパターンの場合はスキップ（ただし、Noneの場合は必ず実行）
+        if self.last_mouth_pattern == pattern and pattern is not None:
+            print(f"🔧 同じ口パターン ({pattern}) のためスキップ")
+            return True
+        
+        try:
+            print(f"🔧 口パターン設定リクエスト: {pattern}")
+            response = self.session.post(
+                f"{self.server_url}/mouth_pattern",
+                json={'mouth_pattern': pattern},
+                timeout=0.1  # タイムアウトを少し長くして確実に処理
+            )
+            
+            if response.status_code == 200:
+                self.last_mouth_pattern = pattern
+                print(f"✅ 口パターン設定成功: {pattern}")
+                return True
+            else:
+                print(f"❌ 口パターン設定失敗: HTTP {response.status_code}, レスポンス: {response.text}")
+                return False
+                
+        except Exception as e:
+            print(f"❌ 口パターン設定エラー: {e}")
+            return False
+    
+    def reset_to_neutral(self):
+        """main.pyのリセット機能を使用して全設定をリセット"""
+        try:
+            response = self.session.post(
+                f"{self.server_url}/api/reset",
+                json={},
+                timeout=0.1
+            )
+            
+            if response.status_code == 200:
+                self.is_talking_mode_active = False
+                self.last_mouth_pattern = None
+                print("🔄 main.pyリセット機能により全設定をリセットしました")
+                return True
+            else:
+                print(f"❌ リセット失敗: HTTP {response.status_code}")
+                return False
+                
+        except Exception as e:
+            print(f"❌ リセット機能エラー: {e}")
+            return False
+    
+    def cleanup_session(self):
+        """セッションのクリーンアップ（メモリリーク防止）"""
+        try:
+            self.session.close()
+            self.session = requests.Session()
+            self.session.headers.update({
+                'Content-Type': 'application/json',
+                'Connection': 'keep-alive'
+            })
+            # アダプターも再設定
+            adapter = requests.adapters.HTTPAdapter(
+                pool_connections=1,
+                pool_maxsize=1,
+                max_retries=0
+            )
+            self.session.mount('http://', adapter)
+            self.session.mount('https://', adapter)
+            self.last_mouth_pattern = None
+        except Exception as e:
+            print(f"セッションクリーンアップエラー: {e}")
+
 class LipSyncController:
     def __init__(self):
         # VOICEVOX初期化
@@ -457,6 +592,9 @@ class LipSyncController:
         
         # AudioQuery音韻解析器を初期化
         self.analyzer = AudioQueryPhonemeAnalyzer(self.synthesizer)
+        
+        # おしゃべりモードコントローラーを初期化
+        self.talking_controller = TalkingModeController() if requests else None
         
         # 音声パラメータ（ハードコードされた設定）
         self.style_id = 54
@@ -538,12 +676,12 @@ class LipSyncController:
             return False
 
     def reset_to_neutral(self):
-        """全設定をニュートラルにリセット（口パターンをNoneに設定）"""
+        """全設定をニュートラルにリセット（口パターンを元の表情の自然な口に戻す）"""
         try:
             # /resetエンドポイントが利用できない場合は口パターンをNoneに設定
             success = self.set_mouth_pattern(None)
             if success:
-                print("🔄 口パターンをニュートラルにリセットしました")
+                print("🔄 口パターンを元の表情の自然な口にリセットしました")
             return success
         except Exception as e:
             print(f"🔄 リセットエラー: {e}")
@@ -654,7 +792,12 @@ class LipSyncController:
         
         print(f"🔊 音声再生開始検知: {actual_audio_start:.6f}")
         
-        # 5. リップシンク実行（音声開始と完全同期）
+        # 5. 音声再生開始直後におしゃべりモードを有効化（これで自然なタイミング）
+        if self.talking_controller:
+            self.talking_controller.set_talking_mode(True)
+            print("🎭 おしゃべりモード有効化（音声再生開始直後）")
+        
+        # 6. リップシンク実行（音声開始と完全同期）
         timing_stats = {'perfect': 0, 'good': 0, 'poor': 0}
         
         for seq_time, mouth_shape, duration in mouth_sequence:
@@ -699,21 +842,38 @@ class LipSyncController:
                 
                 print(f"{sync_indicator} {seq_time:.2f}s: {server_pattern} (誤差:{timing_error_ms:+.1f}ms)")
         
-        # 6. 同期統計を表示
+        # 7. 同期統計を表示
         total_patterns = timing_stats['perfect'] + timing_stats['good'] + timing_stats['poor']
         if total_patterns > 0:
             perfect_rate = timing_stats['perfect'] / total_patterns * 100
             print(f"📈 同期精度: ✓{timing_stats['perfect']} ~{timing_stats['good']} ⚠{timing_stats['poor']} "
                   f"({perfect_rate:.1f}% が5ms以内の精度)")
         
-        # 7. 終了時に口パターンをリセット（表情の自然な口パターンに戻す）
+        # 8. 終了時に口パターンをリセット（表情の自然な口パターンに戻す）
         time_module.sleep(0.2)
-        if restore_original_mouth:
-            print("🔄 口パターンをリセット（表情の自然な口パターンに戻す）")
-            self.set_mouth_pattern_async(None)
+        
+        # おしゃべりモードを無効化（audioqueryの実装と同じ）
+        if self.talking_controller:
+            self.talking_controller.set_talking_mode(False)
+            print("🎭 おしゃべりモード無効化")
+            # 明示的に口パターンをクリア
+            time_module.sleep(0.1)  # おしゃべりモード無効化の処理を待つ
+            success = self.talking_controller.set_mouth_pattern_fast(None)
+            if success:
+                print("✅ 口パターンをクリアしました（元の表情の自然な口パターンに戻る）")
+            else:
+                # フォールバック: 直接設定
+                self.set_mouth_pattern(None)
+                print("✅ 口パターンをクリアしました（フォールバック処理で戻る）")
         else:
-            print("🔄 口パターンリセット")
-            self.set_mouth_pattern_async(None)
+            # talking_controllerがない場合は従来の方法
+            if restore_original_mouth:
+                print("🔄 口パターンをリセット（元の表情の自然な口パターンに戻す）")
+                self.set_mouth_pattern_async(None)
+            else:
+                print("🔄 口パターンリセット")
+                self.set_mouth_pattern_async(None)
+        
         print("✅ 発話完了\n")
 
     def speak_with_word_based_lipsync(self, text, style_id=0):
@@ -859,15 +1019,20 @@ class LipSyncController:
             if server_pattern:
                 print(f"👄 {seq_time:.2f}s: {server_pattern}")
         
-        # 終了時に口パターンをリセット（表情の自然な口パターンに戻す）
-        time_module.sleep(0.5)
-        if restore_original_mouth:
-            print("🔄 口パターンをリセット（表情の自然な口パターンに戻す）")
-            self.set_mouth_pattern(None)
+        # 終了時に口パターンをリセット（元の表情の自然な口パターンに戻す）
+        time_module.sleep(0.2)
+        
+        # 明示的に口パターンをNoneに設定
+        success = self.set_mouth_pattern(None)
+        if success:
+            if restore_original_mouth:
+                print("🔄 口パターンをリセット（元の表情の自然な口パターンに戻す）")
+            else:
+                print("🔄 口パターンリセット")
+            print("✅ 発話完了（口を元の表情の自然な口パターンに戻しました）")
         else:
-            print("🔄 口パターンリセット")
-            self.set_mouth_pattern(None)
-        print("✅ 発話完了\n")
+            print("⚠️ 口パターンのリセットに失敗しました")
+        print()
 
     def text_to_mouth_sequence(self, text):
         """テキストから口の動きシーケンスを生成（簡易版）"""
@@ -1070,7 +1235,28 @@ def main():
         controller.speak_with_lipsync(test_text, restore_original_mouth=True)
         
         print("\n--- 復元機能テスト完了 ---")
-        print("💡 発話後に口パターンがリセットされ、表情の自然な口パターンに戻っているはずです")
+        print("💡 発話後に口パターンがリセットされ、元の表情の自然な口パターンに戻っているはずです")
+        
+        # 最終確認: 口パターンが確実にクリアされているかチェック
+        print("\n--- 最終確認 ---")
+        current_mouth = controller.get_current_mouth_pattern()
+        print(f"🔍 現在の口パターン: {current_mouth}")
+        
+        if current_mouth is not None and current_mouth != "":
+            print("⚠️ 口パターンがまだ設定されています。再度クリアを実行...")
+            success = controller.set_mouth_pattern(None)
+            if success:
+                time_module.sleep(0.3)
+                final_mouth = controller.get_current_mouth_pattern()
+                print(f"🔍 クリア後の口パターン: {final_mouth}")
+                if final_mouth is None or final_mouth == "":
+                    print("✅ 口パターンが正常にクリアされました")
+                else:
+                    print("⚠️ 口パターンのクリアが完全ではありません")
+            else:
+                print("❌ 口パターンのクリアに失敗しました")
+        else:
+            print("✅ 口パターンは正常にクリアされています")
         
         print("\n🎉 全テスト完了！")
         
