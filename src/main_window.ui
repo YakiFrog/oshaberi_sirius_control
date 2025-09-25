@@ -26,7 +26,14 @@
      </widget>
     </item>
     <item>
-     <layout class="QHBoxLayout" name="buttonLayout">
+     <layout class="QHBoxLayout" name="inputLayout">
+      <item>
+       <widget class="QLineEdit" name="messageInput">
+        <property name="placeholderText">
+         <string>メッセージを入力してください...</string>
+        </property>
+       </widget>
+      </item>
       <item>
        <widget class="QPushButton" name="sendButton">
         <property name="text">
@@ -34,6 +41,32 @@
         </property>
        </widget>
       </item>
+      <item>
+       <widget class="QPushButton" name="cancelSpeechButton">
+        <property name="text">
+         <string>読み上げ停止</string>
+        </property>
+       </widget>
+      </item>
+     </layout>
+    </item>
+    <item>
+     <layout class="QHBoxLayout" name="modelLayout">
+      <item>
+       <widget class="QLabel" name="modelLabel">
+        <property name="text">
+         <string>LLMモデル:</string>
+        </property>
+       </widget>
+      </item>
+      <item>
+       <widget class="QComboBox" name="modelSelector">
+       </widget>
+      </item>
+     </layout>
+    </item>
+    <item>
+     <layout class="QHBoxLayout" name="buttonLayout">
       <item>
        <widget class="QPushButton" name="manualAudioButton">
         <property name="text">

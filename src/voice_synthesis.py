@@ -51,7 +51,7 @@ class VoiceSynthesizer:
         """音声合成 + リップシンク"""
         if not self.synthesizer:
             print("❌ Synthesizerが初期化されていません")
-            return False
+            return None
 
         try:
             print(f"🎤 合成: 「{text}」 (速度: {self.speed_scale}x, スタイル: {self.style_id})")
@@ -64,14 +64,14 @@ class VoiceSynthesizer:
             wav_data = self.synthesizer.synthesis(audio_query, self.style_id)
             print("✅ 音声合成成功")
 
-            # リップシンク実行
-            self._perform_lipsync(audio_query, wav_data, self.speed_scale)
+            # リップシンク実行（プロセスを返す）
+            audio_process = self._perform_lipsync(audio_query, wav_data, self.speed_scale)
 
-            return True
+            return audio_process
 
         except Exception as e:
             print(f"❌ 音声合成エラー: {e}")
-            return False
+            return None
 
     def _set_speed_scale(self, audio_query, speed_scale: float):
         """AudioQueryに速度スケールを設定"""
@@ -166,6 +166,9 @@ class VoiceSynthesizer:
         time.sleep(0.2)
         self._set_mouth_pattern_async(None)
         print("✅ 発話完了\n")
+
+        # プロセスは_play_audio_preciseで管理されているので、ここではNoneを返す
+        return None
 
     def _get_mouth_shape_sequence(self, audio_query, speed_scale: float):
         """AudioQueryから口形状シーケンスを生成"""
@@ -281,8 +284,10 @@ class VoiceSynthesizer:
             )
             process.wait()
             os.unlink(temp_file_path)
+            return process
         except Exception as e:
             print(f"❌ 音声再生エラー: {e}")
+            return None
 
     def speak_response(self, text: str):
         """応答音声を再生（リップシンク付き）"""
