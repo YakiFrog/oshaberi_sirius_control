@@ -121,3 +121,6 @@ pip install faster-whisper
 python3 -m py_compile tests/faster_whisper_test.py
 ```
 これで多少は起動動作が速くなる（数％程度）
+
+### 5. シリウスの口パク連動
+sirius_face_animのa,i,oの口パターンを利用する
