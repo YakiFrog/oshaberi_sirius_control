@@ -207,9 +207,15 @@ def main():
     # 音声デバイス一覧を表示
     list_audio_devices()
 
-    # Whisperモデルをロード（サイズはmediumで高精度）
+    # Whisperモデルをロード（最適化設定）
     print("Whisperモデルをロード中...")
-    model = WhisperModel("medium", device="cpu", compute_type="int8")
+    model = WhisperModel(
+        "medium", 
+        device="cpu", 
+        compute_type="int8",
+        cpu_threads=4,  # CPUスレッド数を制限して安定性向上
+        num_workers=1   # ワーカー数を1に設定してメモリ効率向上
+    )
     print("モデルロード完了")
 
     recorder = AudioRecorder()
@@ -248,16 +254,19 @@ def main():
                             segments, info = model.transcribe(
                                 temp_file,
                                 language="ja",              # 日本語指定
-                                beam_size=5,                # ビームサーチサイズ（精度向上）
+                                beam_size=3,                # ビームサーチサイズを削減（5→3）速度向上
                                 temperature=0.0,            # 決定論的出力（精度向上）
                                 compression_ratio_threshold=2.4,  # 圧縮率閾値（ノイズ除去）
                                 log_prob_threshold=-1.0,    # 確率閾値（低信頼度フィルタ）
-                                no_speech_threshold=0.2,    # 無音判定閾値を緩く（0.6→0.2）
+                                no_speech_threshold=0.3,    # 無音判定閾値を調整（0.2→0.3）処理軽減
                                 condition_on_previous_text=False,  # 前のテキストに依存しない
                                 initial_prompt="以下は日本語の音声です。",  # 日本語コンテキスト
-                                word_timestamps=True,       # 単語レベルの信頼度取得のため有効化
+                                word_timestamps=False,      # 単語タイムスタンプ無効化で高速化
                                 vad_filter=True,           # Voice Activity Detection（音声区間検出）
-                                vad_parameters=dict(min_silence_duration_ms=250)  # 無音区間を短く（500→250ms）
+                                vad_parameters=dict(
+                                    min_silence_duration_ms=500,  # 無音区間を長く（250→500ms）処理軽減
+                                    speech_pad_ms=100       # 音声パディングを短縮
+                                )
                             )
                             
                             # セグメントからテキストを抽出
@@ -268,12 +277,10 @@ def main():
                             recognition_end = time.time()
                             total_time_from_stop = recognition_end - stop_command_time
                             
-                            # デバッグ情報を追加
+                            # 簡潔なデバッグ情報（速度優先）
                             print(f"セグメント数: {len(segments_list)}")
-                            for i, segment in enumerate(segments_list):
-                                print(f"  セグメント {i+1}: '{segment.text}' (開始: {segment.start:.2f}s, 終了: {segment.end:.2f}s)")
                             
-                            # 信頼度情報を計算
+                            # 信頼度情報を計算（簡略化）
                             confidence_info = calculate_confidence_metrics(segments_list, info)
                             
                             print(f"認識結果: {text}")
