@@ -107,7 +107,7 @@ class VoiceSynthesizer:
 
         print("📝 口パターンシーケンス:")
         for i, (seq_time, mouth_shape, duration) in enumerate(mouth_sequence[:10]):
-            print(".2f")
+            print(f"  {seq_time:.2f}s: {mouth_shape} ({duration:.2f}s)")
         if len(mouth_sequence) > 10:
             print(f"  ... 他{len(mouth_sequence) - 10}個")
 
@@ -126,7 +126,7 @@ class VoiceSynthesizer:
         audio_start_event.wait()
         actual_audio_start = time.time()
 
-        print(".6f")
+        print(f"🔊 音声再生開始検知: {actual_audio_start:.6f}")
 
         # リップシンク実行
         timing_stats = {'perfect': 0, 'good': 0, 'poor': 0}
@@ -176,13 +176,13 @@ class VoiceSynthesizer:
                     sync_indicator = "⚠"
                     timing_stats['poor'] += 1
 
-                print(".1f")
+                print(f"{sync_indicator} {seq_time:.2f}s: mouth_{mouth_shape} (誤差:{timing_error_ms:+.1f}ms)")
 
-        # 統計表示
+                # 統計表示
         total_patterns = timing_stats['perfect'] + timing_stats['good'] + timing_stats['poor']
         if total_patterns > 0:
             perfect_rate = timing_stats['perfect'] / total_patterns * 100
-            print(".1f")
+            print(f"📈 同期精度: ✓{timing_stats['perfect']} ~{timing_stats['good']} ⚠{timing_stats['poor']} ({perfect_rate:.1f}% が5ms以内の精度)")
 
         # 終了時に口パターンをリセット
         time.sleep(0.2)

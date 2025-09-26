@@ -67,17 +67,22 @@ class RealtimeRecognizer:
         self.voice_threshold = 100
 
     def _init_model(self):
-        """モデルを遅延初期化"""
+        """モデルを遅延初期化（重複回避）"""
         if self.model is None:
             print("🚀 Faster Whisperモデルをロード中...")
-            self.model = WhisperModel(
-                MODEL_CONFIG["model_size"],
-                device=MODEL_CONFIG["device"],
-                compute_type=MODEL_CONFIG["compute_type"],
-                cpu_threads=MODEL_CONFIG["cpu_threads"],
-                num_workers=MODEL_CONFIG["num_workers"]
-            )
-            print("✅ モデルロード完了")
+            try:
+                self.model = WhisperModel(
+                    MODEL_CONFIG["model_size"],
+                    device=MODEL_CONFIG["device"],
+                    compute_type=MODEL_CONFIG["compute_type"],
+                    cpu_threads=MODEL_CONFIG["cpu_threads"],
+                    num_workers=MODEL_CONFIG["num_workers"]
+                )
+                print("✅ モデルロード完了")
+            except Exception as e:
+                print(f"❌ モデルロードエラー: {e}")
+                self.model = None
+                raise
 
     def start_recognition(self):
         """音声認識を開始（録音開始）"""
@@ -189,6 +194,7 @@ class RealtimeRecognizer:
                 return
 
             # 音声認識
+            print("🔄 音声認識処理開始...")
             segments, info = self.model.transcribe(
                 temp_filename,
                 language=TRANSCRIBE_CONFIG["language"],
@@ -203,10 +209,38 @@ class RealtimeRecognizer:
                 vad_filter=TRANSCRIBE_CONFIG["vad_filter"],
                 vad_parameters=TRANSCRIBE_CONFIG["vad_parameters"]
             )
+            print("✅ 音声認識処理完了")
 
             # 結果処理
             segments_list = list(segments)
-            text = "".join(segment.text for segment in segments_list).strip()
+            print(f"🔍 認識セグメント数: {len(segments_list)}")
+            
+            # テキストを安全に結合（エンコーディングエラー対応）
+            text_parts = []
+            for i, segment in enumerate(segments_list):
+                segment_text = segment.text
+                print(f"🔍 セグメント{i}: タイプ={type(segment_text)}, 内容={repr(segment_text)}")
+                
+                if isinstance(segment_text, bytes):
+                    # バイト文字列の場合、UTF-8でデコード
+                    try:
+                        segment_text = segment_text.decode('utf-8', errors='ignore')
+                        print(f"✅ バイトからデコード: {segment_text}")
+                    except Exception as decode_error:
+                        print(f"❌ デコードエラー: {decode_error}")
+                        segment_text = str(segment_text, 'utf-8', errors='ignore')
+                elif isinstance(segment_text, str):
+                    # 文字列の場合、そのまま使用
+                    print(f"✅ 文字列として処理: {segment_text}")
+                else:
+                    # その他の場合、文字列に変換
+                    print(f"⚠️ その他の型から変換: {type(segment_text)}")
+                    segment_text = str(segment_text)
+                
+                text_parts.append(segment_text)
+            
+            text = "".join(text_parts).strip()
+            print(f"🎯 結合後テキスト: {repr(text)}")
 
             if text:
                 confidence = self._calculate_confidence(segments_list, info)
@@ -249,3 +283,38 @@ class RealtimeRecognizer:
 
         except:
             return 50.0
+
+    def cleanup(self):
+        """リソースのクリーンアップ"""
+        try:
+            # 録音停止
+            if self.is_recording:
+                self.stop_recognition()
+            
+            # ストリームクリーンアップ
+            if self.stream:
+                try:
+                    self.stream.stop_stream()
+                    self.stream.close()
+                except:
+                    pass
+                self.stream = None
+
+            # PyAudioクリーンアップ
+            if self.audio:
+                try:
+                    self.audio.terminate()
+                except:
+                    pass
+                self.audio = None
+
+            # フレームバッファクリア
+            self.frames.clear()
+            
+            print("✅ RealtimeRecognizer リソースクリーンアップ完了")
+        except Exception as e:
+            print(f"⚠️ RealtimeRecognizer クリーンアップ警告: {e}")
+
+    def __del__(self):
+        """デストラクタでリソースをクリーンアップ"""
+        self.cleanup()

@@ -464,11 +464,19 @@ class VoiceController(QObject):
     def cleanup(self):
         """リソースのクリーンアップ"""
         try:
-            # 音声認識停止
+            # 音声合成キャンセル
+            self.cancel_speech()
+            
+            # 音声認識停止とクリーンアップ
             self.stop_recognition()
+            if hasattr(self.recognizer, 'cleanup') and self.recognizer:
+                self.recognizer.cleanup()
+            
             # VOICEVOXクリーンアップ
             if self.synthesizer:
                 self.synthesizer.cleanup()
+            
+            print("✅ VoiceController クリーンアップ完了")
         except Exception as e:
             print(f"⚠️ VoiceControllerクリーンアップ警告: {e}")
 
@@ -797,3 +805,31 @@ class MainWindow:
 
     def show(self):
         self.window.show()
+
+    def cleanup(self):
+        """アプリケーション終了時のクリーンアップ"""
+        try:
+            # 音声合成キャンセル
+            if hasattr(self.voice_controller, 'cancel_speech'):
+                self.voice_controller.cancel_speech()
+            
+            # 音声認識停止
+            if hasattr(self.voice_controller, 'stop_recognition'):
+                self.voice_controller.stop_recognition()
+            
+            # ウェイクワード検出停止
+            if hasattr(self.wake_controller, 'detector') and self.wake_controller.detector:
+                self.wake_controller.detector.stop_detection()
+            
+            # 各コントローラーのクリーンアップ
+            if hasattr(self.voice_controller, 'cleanup'):
+                self.voice_controller.cleanup()
+            
+            print("✅ MainWindow クリーンアップ完了")
+        except Exception as e:
+            print(f"⚠️ MainWindow クリーンアップ警告: {e}")
+
+    def closeEvent(self, event):
+        """ウィンドウクローズイベント"""
+        self.cleanup()
+        event.accept()
