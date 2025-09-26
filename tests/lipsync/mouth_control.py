@@ -221,23 +221,71 @@ class TalkingModeController:
             print(f"セッションクリーンアップエラー: {e}")
 
 class AudioPlayer:
-    """音声再生機能"""
+    """音声再生機能（クロスプラットフォーム対応）"""
+
+    def __init__(self):
+        """利用可能な音声再生コマンドを検出"""
+        self.audio_command = self._detect_audio_command()
+        print(f"🔊 音声再生コマンド: {self.audio_command}")
+
+    def _detect_audio_command(self):
+        """利用可能な音声再生コマンドを検出"""
+        import shutil
+        
+        # プラットフォーム別のコマンド優先順位
+        commands = [
+            'paplay',  # PulseAudio (Ubuntu/Linux preferred)
+            'aplay',   # ALSA (Linux fallback)
+            'ffplay',  # ffmpeg (Linux/cross-platform)
+            'afplay',  # macOS
+            'powershell.exe -c (New-Object Media.SoundPlayer'  # Windows fallback
+        ]
+        
+        for cmd in commands:
+            if cmd.startswith('powershell'):
+                # Windows用の特別処理
+                if os.name == 'nt':
+                    return 'powershell'
+            else:
+                if shutil.which(cmd.split()[0]):
+                    return cmd
+        
+        return None
 
     def play_audio(self, wav_data):
-        """音声を再生（macOS）"""
+        """音声を再生"""
+        if not self.audio_command:
+            print("❌ 音声再生コマンドが見つかりません")
+            return
+
         try:
             import tempfile
             with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as temp_file:
                 temp_file.write(wav_data)
                 temp_file_path = temp_file.name
 
-            os.system(f"afplay {temp_file_path}")
+            if self.audio_command == 'powershell':
+                # Windows PowerShell
+                os.system(f'powershell.exe -c "(New-Object Media.SoundPlayer \\"{temp_file_path}\\").PlaySync()"')
+            elif self.audio_command == 'ffplay':
+                # ffplay（ログ出力を抑制）
+                os.system(f"{self.audio_command} -nodisp -autoexit -loglevel quiet {temp_file_path}")
+            else:
+                # aplay, paplay, afplay
+                os.system(f"{self.audio_command} {temp_file_path}")
+            
             os.unlink(temp_file_path)
         except Exception as e:
             print(f"❌ 音声再生エラー: {e}")
 
     def play_audio_precise(self, wav_data, start_event):
         """音声を再生（精密同期版）"""
+        if not self.audio_command:
+            print("❌ 音声再生コマンドが見つかりません")
+            if start_event:
+                start_event.set()
+            return
+
         try:
             import tempfile
             import subprocess
@@ -247,12 +295,27 @@ class AudioPlayer:
                 temp_file_path = temp_file.name
 
             # 再生開始を通知
-            start_event.set()
+            if start_event:
+                start_event.set()
 
-            # afplayで再生
-            process = subprocess.Popen(['afplay', temp_file_path],
-                                     stdout=subprocess.DEVNULL,
-                                     stderr=subprocess.DEVNULL)
+            # プラットフォーム別の音声再生
+            if self.audio_command == 'powershell':
+                # Windows PowerShell
+                process = subprocess.Popen([
+                    'powershell.exe', '-c', 
+                    f'(New-Object Media.SoundPlayer \\"{temp_file_path}\\").PlaySync()'
+                ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            elif self.audio_command == 'ffplay':
+                # ffplay（ログ出力を抑制）
+                process = subprocess.Popen([
+                    'ffplay', '-nodisp', '-autoexit', '-loglevel', 'quiet', temp_file_path
+                ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            else:
+                # aplay, paplay, afplay
+                process = subprocess.Popen([self.audio_command, temp_file_path],
+                                         stdout=subprocess.DEVNULL,
+                                         stderr=subprocess.DEVNULL)
+            
             process.wait()
             os.unlink(temp_file_path)
         except Exception as e:
