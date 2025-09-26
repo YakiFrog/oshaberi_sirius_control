@@ -24,6 +24,28 @@ class VoiceSynthesizer:
         self.speed_scale = 1.0
         self.pitch_scale = 0.0
         self.intonation_scale = 0.9
+        
+        # 音声再生コマンドを検出
+        self.audio_command = self._detect_audio_command()
+        print(f"🔊 音声再生コマンド: {self.audio_command}")
+
+    def _detect_audio_command(self):
+        """利用可能な音声再生コマンドを検出"""
+        import shutil
+        
+        # プラットフォーム別のコマンド優先順位
+        commands = [
+            'paplay',  # PulseAudio (Ubuntu/Linux preferred)
+            'aplay',   # ALSA (Linux fallback)
+            'ffplay',  # ffmpeg (Linux/cross-platform)
+            'afplay',  # macOS
+        ]
+        
+        for cmd in commands:
+            if shutil.which(cmd):
+                return cmd
+        
+        return None
 
     def _init_synthesizer(self):
         """Synthesizerを初期化"""
@@ -267,7 +289,13 @@ class VoiceSynthesizer:
         thread.start()
 
     def _play_audio_precise(self, wav_data, start_event):
-        """音声を再生（精密同期版）"""
+        """音声を再生（精密同期版・クロスプラットフォーム対応）"""
+        if not self.audio_command:
+            print("❌ 音声再生コマンドが見つかりません")
+            if start_event:
+                start_event.set()
+            return None
+
         try:
             with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as temp_file:
                 temp_file.write(wav_data)
@@ -276,12 +304,18 @@ class VoiceSynthesizer:
             # 再生開始を通知
             start_event.set()
 
-            # afplayで再生
-            process = subprocess.Popen(
-                ['afplay', temp_file_path],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL
-            )
+            # プラットフォーム別の音声再生
+            if self.audio_command == 'ffplay':
+                # ffplay（ログ出力を抑制）
+                process = subprocess.Popen([
+                    'ffplay', '-nodisp', '-autoexit', '-loglevel', 'quiet', temp_file_path
+                ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            else:
+                # aplay, paplay, afplay
+                process = subprocess.Popen([self.audio_command, temp_file_path],
+                                         stdout=subprocess.DEVNULL,
+                                         stderr=subprocess.DEVNULL)
+            
             process.wait()
             os.unlink(temp_file_path)
             return process

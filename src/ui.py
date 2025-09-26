@@ -98,6 +98,11 @@ class VoiceController(QObject):
         self.synthesizer = VoiceSynthesizer()
         self.recognizer = None  # 遅延初期化
         self.is_recognizing = False
+        
+        # 音声再生コマンドを検出
+        self.audio_command = self._detect_audio_command()
+        print(f"🔊 UI音声再生コマンド: {self.audio_command}")
+        
         self.is_speaking = False  # 音声合成中フラグ
         self.model_loading = False
         self.llm_model = "mistralai/magistral-small-2509"  # デフォルトモデル
@@ -106,6 +111,24 @@ class VoiceController(QObject):
         self.audio_process = None  # 音声再生プロセス
         self.speech_thread = None  # 音声合成スレッド
         self.lipsync_thread = None  # リップシンクスレッド
+
+    def _detect_audio_command(self):
+        """利用可能な音声再生コマンドを検出"""
+        import shutil
+        
+        # プラットフォーム別のコマンド優先順位
+        commands = [
+            'paplay',  # PulseAudio (Ubuntu/Linux preferred)
+            'aplay',   # ALSA (Linux fallback)
+            'ffplay',  # ffmpeg (Linux/cross-platform)
+            'afplay',  # macOS
+        ]
+        
+        for cmd in commands:
+            if shutil.which(cmd):
+                return cmd
+        
+        return None
 
     def preload_model(self):
         """音声認識モデルを事前ロード"""
@@ -364,7 +387,13 @@ class VoiceController(QObject):
         return self.audio_process
 
     def _play_audio_with_process(self, wav_data, start_event):
-        """音声を再生してプロセスを保存"""
+        """音声を再生してプロセスを保存（クロスプラットフォーム対応）"""
+        if not self.audio_command:
+            print("❌ 音声再生コマンドが見つかりません")
+            if start_event:
+                start_event.set()
+            return
+        
         try:
             import tempfile
             import subprocess
@@ -380,12 +409,18 @@ class VoiceController(QObject):
             # 音声再生開始を通知
             self.speech_started.emit()
 
-            # afplayで再生
-            self.audio_process = subprocess.Popen(
-                ['afplay', temp_file_path],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL
-            )
+            # プラットフォーム別の音声再生
+            if self.audio_command == 'ffplay':
+                # ffplay（ログ出力を抑制）
+                self.audio_process = subprocess.Popen([
+                    'ffplay', '-nodisp', '-autoexit', '-loglevel', 'quiet', temp_file_path
+                ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            else:
+                # aplay, paplay, afplay
+                self.audio_process = subprocess.Popen([self.audio_command, temp_file_path],
+                                                    stdout=subprocess.DEVNULL,
+                                                    stderr=subprocess.DEVNULL)
+            
             self.audio_process.wait()
             
             # クリーンアップ
